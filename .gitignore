@@ -1,0 +1,13 @@
+# build output
+build/
+*.o
+*.a
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.xcworkspace
+xcuserdata/

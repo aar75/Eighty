@@ -1,0 +1,94 @@
+# Eighty
+
+A polyphonic synth plugin with **two engines — a Yamaha CS-80 model and a
+Roland Jupiter-8 model** — behind one clean, flat, readable digital UI
+(deliberately *not* a hardware panel clone). Built with JUCE.
+
+The ENGINE section picks what sounds: **CS-80** everywhere, **JP-8**
+everywhere, **Split** — a split key (with a CS LOW toggle for which side is
+which) routes each note to its engine — or **Layer**, which plays both
+engines on every note (in Unison mode the stack alternates engines). The
+PANEL buttons switch which engine's controls are shown; shared sections
+(LFO, Touch, Voices, Arp, FX) stay put. Every control has a hover tooltip.
+
+## Formats
+
+- **Standalone** app
+- **VST3** and **AU** (built by default)
+- **AAX** — enabled automatically when the licensed Avid AAX SDK is available:
+  `export AAX_SDK_PATH=/path/to/AAX_SDK` before configuring. (AAX also
+  requires PACE signing to load in retail Pro Tools.)
+
+## Build
+
+```sh
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j 8
+```
+
+Requires a sibling `../JUCE` checkout (or it will be fetched automatically).
+Built plugins are copied to `~/Library/Audio/Plug-Ins/{VST3,Components}`.
+
+## What's modeled from the CS-80
+
+- **Two oscillator channels (I & II)** — each a single VCO core producing
+  saw + variable-width pulse simultaneously (mixable, PolyBLEP anti-aliased),
+  with 32'/16'/8'/4' ranges, detune, and per-channel PWM depth from a
+  dedicated PWM LFO.
+- **Filter** — the CS-80's series topology: 12 dB/oct high-pass into a
+  12 dB/oct resonant low-pass (TPT state-variable filters), with a
+  soft-saturating drive stage.
+- **Single global LFO ("sub oscillator")** routed to pitch / filter / amp,
+  with a delay/fade-in — shared by all voices, as on the original.
+- **Touch section** — the CS-80 is famous for polyphonic aftertouch. Real
+  channel/poly aftertouch is honored, and a **simulated pressure ramp**
+  (Rise) builds while a key is held so computer-keyboard players get the
+  swelling vibrato/brightness/level too.
+- **Analog inconsistency (Drift)** — each of the 16 voice "cards" gets fixed,
+  seeded component tolerances (pitch, cutoff, envelope speed, pulse width,
+  level, pan) plus a slow random pitch walk, scaled by one knob. Voices are
+  also panned per-card (odd/even left/right) via Spread.
+- **Ring modulator and ribbon are intentionally omitted** (ribbon scrapped by
+  design; ring mod left out to keep the panel light).
+
+## What's modeled from the Jupiter-8
+
+- **Two VCOs** — VCO1: tri/saw/pulse/square; VCO2: tri/saw/pulse/noise, with
+  semitone/fine tune, 16'/8'/4'/2' ranges, **hard sync** (VCO2 to VCO1) and
+  **cross-mod** (VCO2 FMs VCO1), mixed with one balance knob.
+- **Filter** — non-resonant HPF into an IR3109-style resonant low-pass
+  switchable **12/24 dB/oct** (24 dB mode resonates harder, like the original).
+- Its own filter/amp ADSRs. Drift, touch, LFO, and FX apply to both engines.
+
+## Everything else
+
+Poly / Mono / Legato / Unison (with detune + stereo spread), hold latch,
+arpeggiator with an "As Played" sequencer mode (sync or free-rate), portamento
+(off/legato/always), pitch wheel (sprung), full MIDI learn (right-click any
+knob), chorus / delay / tremolo FX, live output oscilloscope, velocity
+sensitivity, master tune/volume.
+
+## Computer keyboard
+
+| Keys | Action |
+| --- | --- |
+| `A W S E D F T G Y H U J K O L P ;` | play notes (piano layout) |
+| `Z` / `X` | octave down / up |
+| `C` / `V` | velocity down / up |
+| `B` | toggle Hold |
+| `N` | toggle Arp |
+| `←` / `→` | select previous / next control (click also selects) |
+| `↑` / `↓` | adjust the selected control |
+| `Shift+↑` / `Shift+↓` | pitch bend (springs back) |
+| `Esc` | deselect |
+
+Right-click any knob → **MIDI Learn**, then move a hardware control.
+Mappings are saved with the plugin state.
+
+## Code map
+
+- `Source/DSP/Voice.h` — one voice card, playable as CS-80 or JP-8 per note
+- `Source/DSP/SynthEngine.h` — voice allocation, modes, hold, arp, split, global LFOs
+- `Source/DSP/CS80Filter.h`, `JP8Filter.h`, `Oscillator.h`, `Envelope.h`, `LFO.h`, `Effects.h`
+- `Source/PluginProcessor.*` — parameters, MIDI handling, MIDI learn, FX chain
+- `Source/PluginEditor.*` — flat UI, scope, pitch wheel, computer-key handling
