@@ -68,6 +68,13 @@ arpeggiator with an "As Played" sequencer mode (sync or free-rate), portamento
 knob), chorus / delay / tremolo FX, live output oscilloscope, velocity
 sensitivity, master tune/volume.
 
+**VST3 insert chain** — the panel next to the keyboard loads up to four
+external VST3 effects at the end of the chain (post-FX, pre master volume).
+"+ ADD VST3" scans the standard VST3 folders (cached afterwards; instruments
+are filtered out), each loaded plugin opens its own editor window, and plugin
+states are saved with the Eighty preset. Reported latency is forwarded to
+the host.
+
 ## Computer keyboard
 
 | Keys | Action |
