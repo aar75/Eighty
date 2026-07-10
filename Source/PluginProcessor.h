@@ -165,18 +165,29 @@ public:
     juce::AudioPluginInstance* getInsert (int index) const;
     static constexpr int kMaxInserts = 4;
 
+    // ---- hosted VST3 synth layer (plays the engine's note stream) ----
+    bool setSynthLayer (const juce::PluginDescription&, juce::String& error);
+    void clearSynthLayer();
+    juce::String getSynthLayerName() const;
+    juce::AudioPluginInstance* getSynthLayer() const;
+
 private:
     void updateParameters();
     void handleMidiEvent (const juce::MidiMessage& m);
 
     juce::File pluginCacheFile() const;
+    juce::File deadMansPedalFile() const;
+    void saveKnownPlugins();
     juce::ValueTree chainToValueTree() const;
-    void restoreChainFromValueTree (juce::ValueTree state);   // message thread
+    void restoreChainFromValueTree (juce::ValueTree chain, juce::ValueTree synth);
     void updateChainLatency();
 
     juce::AudioPluginFormatManager formatManager;
     juce::OwnedArray<juce::AudioPluginInstance> insertChain;  // guarded by chainLock
+    std::unique_ptr<juce::AudioPluginInstance> synthLayer;    // guarded by chainLock
     mutable juce::CriticalSection chainLock;
+    juce::AudioBuffer<float> synthBuf;
+    juce::MidiBuffer midiEcho;
     double curSampleRate = 44100.0;
     int curBlockSize = 512;
 

@@ -37,6 +37,7 @@ struct VoiceParams
 
     float drift = 0.35f;
     float stereoSpread = 0.6f;
+    float csGain = 1.f, jpGain = 1.f;   // CS/JP mix (Split & Layer modes)
     float glideTime = 0.05f;
     int   glideMode = 0;           // 0 off, 1 legato, 2 always
     float masterTuneCents = 0.f;
@@ -324,7 +325,8 @@ private:
         ampScale = (1.f - P.velToAmp * (1.f - velocity))
                  * (1.f + pressure * P.touchToLevel * 0.6f)
                  * (1.f + tolLevel * P.drift)
-                 * noteGain;
+                 * noteGain
+                 * (model == modelCS80 ? P.csGain : P.jpGain);
 
         // --- Pan: spread places cards across the field (odd/even L/R like
         // the CS-80 voice card outputs), plus tolerance offset + unison spread

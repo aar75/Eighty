@@ -106,6 +106,8 @@ namespace ID
     inline constexpr const char* engineMode = "engineMode";   // CS-80 / JP-8 / Split
     inline constexpr const char* splitPoint = "splitPoint";
     inline constexpr const char* splitCsLow = "splitCsLow";   // CS on the low side?
+    inline constexpr const char* engineBalance = "engineBalance"; // CS <-> JP mix
+    inline constexpr const char* synthLevel = "synthLevel";   // hosted VST3 synth layer
 
     // Jupiter-8 voice card
     inline constexpr const char* jpVco1Wave  = "jpVco1Wave";
@@ -267,6 +269,8 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         StringArray { "CS-80", "JP-8", "Split", "Layer" }, 0));
     p.push_back(std::make_unique<Pi>(ID::splitPoint, "Split Point", 36, 84, 60));
     p.push_back(std::make_unique<Pb>(ID::splitCsLow, "CS Low", true));
+    p.push_back(std::make_unique<P>(ID::engineBalance, "CS/JP Mix", pct, 0.5f));
+    p.push_back(std::make_unique<P>(ID::synthLevel, "Synth Level", pct, 0.8f));
 
     // Jupiter-8
     StringArray jpFeet { "16'", "8'", "4'", "2'" };

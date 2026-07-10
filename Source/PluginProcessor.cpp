@@ -9,9 +9,22 @@ EightyProcessor::EightyProcessor()
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
             raw[rp->paramID] = apvts.getRawParameterValue (rp->paramID);
 
+    // engine note stream -> hosted synth layer
+    engine.noteEcho = [this] (int note, float vel, bool on, int offset)
+    {
+        midiEcho.addEvent (on ? juce::MidiMessage::noteOn (1, note, vel)
+                              : juce::MidiMessage::noteOff (1, note),
+                           juce::jmax (0, offset));
+    };
+
     formatManager.addDefaultFormats();   // VST3 hosting (JUCE_PLUGINHOST_VST3)
     if (auto xml = juce::parseXML (pluginCacheFile()))
         knownPlugins.recreateFromXml (*xml);
+
+    // If a previous scan died mid-plugin, the dead-man's-pedal file still
+    // names the culprit - blacklist it so the next scan skips it.
+    juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal (
+        knownPlugins, deadMansPedalFile());
 }
 
 // ------------------------------------------------ external insert chain
@@ -21,21 +34,47 @@ juce::File EightyProcessor::pluginCacheFile() const
         .getChildFile ("Eighty").getChildFile ("pluginCache.xml");
 }
 
-void EightyProcessor::rescanPlugins()
+juce::File EightyProcessor::deadMansPedalFile() const
 {
-    knownPlugins.clear();
-    juce::VST3PluginFormat format;
-    juce::PluginDirectoryScanner scanner (knownPlugins, format,
-                                          format.getDefaultLocationsToSearch(),
-                                          true, juce::File());
-    juce::String progressName;
-    while (scanner.scanNextFile (true, progressName)) {}
+    return pluginCacheFile().getSiblingFile ("scanInProgress.txt");
+}
 
-    if (auto xml = knownPlugins.createXml())
+void EightyProcessor::saveKnownPlugins()
+{
+    if (auto xml = knownPlugins.createXml())   // includes the blacklist
     {
         pluginCacheFile().getParentDirectory().createDirectory();
         xml->writeTo (pluginCacheFile());
     }
+}
+
+void EightyProcessor::rescanPlugins()
+{
+    // Crash-safe scan: the dead-man's-pedal file names the plugin being
+    // probed, so if that plugin kills the process it gets blacklisted on
+    // the next launch instead of crashing us forever. The cache is saved
+    // incrementally so a crash loses at most a few entries, and already-
+    // scanned plugins are skipped when the user rescans.
+    juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal (
+        knownPlugins, deadMansPedalFile());
+
+    juce::VST3PluginFormat format;
+    juce::PluginDirectoryScanner scanner (knownPlugins, format,
+                                          format.getDefaultLocationsToSearch(),
+                                          true, deadMansPedalFile());
+    juce::String progressName;
+    int sinceSave = 0;
+    bool more = true;
+    while (more)
+    {
+        more = scanner.scanNextFile (true, progressName);
+        if (++sinceSave >= 4)
+        {
+            sinceSave = 0;
+            saveKnownPlugins();
+        }
+    }
+    saveKnownPlugins();
 }
 
 bool EightyProcessor::addInsert (const juce::PluginDescription& desc, juce::String& error)
@@ -105,44 +144,63 @@ void EightyProcessor::updateChainLatency()
     setLatencySamples (latency);
 }
 
+static juce::ValueTree pluginInstanceToTree (juce::AudioPluginInstance& p)
+{
+    juce::ValueTree e ("plugin");
+    if (auto descXml = p.getPluginDescription().createXml())
+        e.setProperty ("desc", descXml->toString(), nullptr);
+    juce::MemoryBlock mb;
+    p.getStateInformation (mb);
+    e.setProperty ("state", mb.toBase64Encoding(), nullptr);
+    return e;
+}
+
+static bool descFromTree (const juce::ValueTree& e, juce::PluginDescription& desc)
+{
+    if (auto descXml = juce::parseXML (e.getProperty ("desc").toString()))
+        return desc.loadFromXml (*descXml);
+    return false;
+}
+
+static void applyStateFromTree (const juce::ValueTree& e, juce::AudioPluginInstance* inst)
+{
+    juce::MemoryBlock mb;
+    if (inst != nullptr && mb.fromBase64Encoding (e.getProperty ("state").toString()))
+        inst->setStateInformation (mb.getData(), (int) mb.getSize());
+}
+
 juce::ValueTree EightyProcessor::chainToValueTree() const
 {
     juce::ValueTree t ("insertChain");
     const juce::ScopedLock sl (chainLock);
     for (auto* p : insertChain)
-    {
-        juce::ValueTree e ("plugin");
-        if (auto descXml = p->getPluginDescription().createXml())
-            e.setProperty ("desc", descXml->toString(), nullptr);
-        juce::MemoryBlock mb;
-        p->getStateInformation (mb);
-        e.setProperty ("state", mb.toBase64Encoding(), nullptr);
-        t.appendChild (e, nullptr);
-    }
+        t.appendChild (pluginInstanceToTree (*p), nullptr);
     return t;
 }
 
-void EightyProcessor::restoreChainFromValueTree (juce::ValueTree state)
+void EightyProcessor::restoreChainFromValueTree (juce::ValueTree chain, juce::ValueTree synth)
 {
-    // clear existing
     while (getNumInserts() > 0)
         removeInsert (0);
+    clearSynthLayer();
 
-    for (auto e : state)
+    for (auto e : chain)
     {
         if (! e.hasType ("plugin")) continue;
         juce::PluginDescription desc;
-        if (auto descXml = juce::parseXML (e.getProperty ("desc").toString()))
-            if (! desc.loadFromXml (*descXml))
-                continue;
+        if (! descFromTree (e, desc)) continue;
         juce::String error;
         if (addInsert (desc, error))
-        {
-            juce::MemoryBlock mb;
-            if (mb.fromBase64Encoding (e.getProperty ("state").toString()))
-                if (auto* inst = getInsert (getNumInserts() - 1))
-                    inst->setStateInformation (mb.getData(), (int) mb.getSize());
-        }
+            applyStateFromTree (e, getInsert (getNumInserts() - 1));
+    }
+
+    auto e = synth.getChildWithName ("plugin");
+    if (e.isValid())
+    {
+        juce::PluginDescription desc;
+        juce::String error;
+        if (descFromTree (e, desc) && setSynthLayer (desc, error))
+            applyStateFromTree (e, getSynthLayer());
     }
 }
 
@@ -156,6 +214,8 @@ void EightyProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     tremolo.prepare (sampleRate);
     scratch.setSize (1, juce::jmax (samplesPerBlock, 32));
 
+    synthBuf.setSize (2, juce::jmax (samplesPerBlock, 32));
+
     {
         const juce::ScopedLock sl (chainLock);
         for (auto* p : insertChain)
@@ -164,8 +224,63 @@ void EightyProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
             p->setPlayConfigDetails (2, 2, sampleRate, samplesPerBlock);
             p->prepareToPlay (sampleRate, samplesPerBlock);
         }
+        if (synthLayer != nullptr)
+        {
+            synthLayer->releaseResources();
+            synthLayer->setPlayConfigDetails (0, 2, sampleRate, samplesPerBlock);
+            synthLayer->prepareToPlay (sampleRate, samplesPerBlock);
+        }
     }
     updateChainLatency();
+}
+
+// ------------------------------------------------- hosted synth layer
+bool EightyProcessor::setSynthLayer (const juce::PluginDescription& desc, juce::String& error)
+{
+    auto inst = formatManager.createPluginInstance (desc, curSampleRate, curBlockSize, error);
+    if (inst == nullptr)
+        return false;
+
+    inst->enableAllBuses();
+    inst->setPlayConfigDetails (0, 2, curSampleRate, curBlockSize);
+    inst->prepareToPlay (curSampleRate, curBlockSize);
+
+    std::unique_ptr<juce::AudioPluginInstance> old;
+    {
+        const juce::ScopedLock sl (chainLock);
+        old = std::move (synthLayer);
+        synthLayer = std::move (inst);
+    }
+    old.reset();
+    ++chainVersion;
+    return true;
+}
+
+void EightyProcessor::clearSynthLayer()
+{
+    std::unique_ptr<juce::AudioPluginInstance> old;
+    {
+        const juce::ScopedLock sl (chainLock);
+        old = std::move (synthLayer);
+    }
+    if (old != nullptr)
+    {
+        old->releaseResources();
+        old.reset();
+        ++chainVersion;
+    }
+}
+
+juce::String EightyProcessor::getSynthLayerName() const
+{
+    const juce::ScopedLock sl (chainLock);
+    return synthLayer != nullptr ? synthLayer->getName() : juce::String();
+}
+
+juce::AudioPluginInstance* EightyProcessor::getSynthLayer() const
+{
+    const juce::ScopedLock sl (chainLock);
+    return synthLayer.get();
 }
 
 bool EightyProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -247,6 +362,17 @@ void EightyProcessor::updateParameters()
     es.engineMode = (int) rawVal (ID::engineMode);
     es.splitPoint = (int) rawVal (ID::splitPoint);
     es.csLow      = rawVal (ID::splitCsLow) > 0.5f;
+
+    // CS/JP balance only applies when both engines can sound (Split/Layer);
+    // center = both at full, edges mute one side
+    const float bal = rawVal (ID::engineBalance);
+    if (es.engineMode >= 2)
+    {
+        vp.csGain = juce::jmin (1.f, 2.f * (1.f - bal));
+        vp.jpGain = juce::jmin (1.f, 2.f * bal);
+    }
+    else
+        vp.csGain = vp.jpGain = 1.f;
 
     vp.drift        = rawVal (ID::drift);
     vp.stereoSpread = rawVal (ID::stereoSpread);
@@ -354,20 +480,45 @@ void EightyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     // render segments split at midi event boundaries
+    midiEcho.clear();
     int pos = 0;
     for (const auto meta : midi)
     {
         const int t = juce::jlimit (0, total, (int) meta.samplePosition);
         if (t > pos)
         {
-            engine.render (left + pos, right + pos, t - pos);
+            engine.render (left + pos, right + pos, t - pos, pos);
             pos = t;
         }
-        handleMidiEvent (meta.getMessage());
+        const auto msg = meta.getMessage();
+        // expression data passes straight through to the synth layer
+        if (msg.isPitchWheel() || msg.isController() || msg.isChannelPressure()
+            || msg.isAftertouch())
+            midiEcho.addEvent (msg, t);
+        engine.echoBase = t;
+        handleMidiEvent (msg);
     }
     if (pos < total)
-        engine.render (left + pos, right + pos, total - pos);
+        engine.render (left + pos, right + pos, total - pos, pos);
     midi.clear();
+
+    // hosted VST3 synth layer: plays the engine's effective note stream
+    // (post arp/hold), mixed in before the FX chain
+    if (buffer.getNumChannels() >= 2)
+    {
+        const juce::ScopedTryLock stl (chainLock);
+        if (stl.isLocked() && synthLayer != nullptr)
+        {
+            if (synthBuf.getNumSamples() < total)
+                synthBuf.setSize (2, total, false, false, true);
+            juce::AudioBuffer<float> sb (synthBuf.getArrayOfWritePointers(), 2, total);
+            sb.clear();
+            synthLayer->processBlock (sb, midiEcho);
+            const float lvl = rawVal (ID::synthLevel);
+            buffer.addFrom (0, 0, sb, 0, 0, total, lvl);
+            buffer.addFrom (1, 0, sb, 1, 0, total, lvl);
+        }
+    }
 
     // FX chain
     if (rawVal (ID::chorusOn) > 0.5f)
@@ -434,6 +585,14 @@ void EightyProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.appendChild (midiLearn.toValueTree(), nullptr);
     state.removeChild (state.getChildWithName ("insertChain"), nullptr);
     state.appendChild (chainToValueTree(), nullptr);
+    state.removeChild (state.getChildWithName ("synthLayer"), nullptr);
+    {
+        juce::ValueTree s ("synthLayer");
+        const juce::ScopedLock sl (chainLock);
+        if (synthLayer != nullptr)
+            s.appendChild (pluginInstanceToTree (*synthLayer), nullptr);
+        state.appendChild (s, nullptr);
+    }
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -448,14 +607,16 @@ void EightyProcessor::setStateInformation (const void* data, int sizeInBytes)
 
         auto chain = state.getChildWithName ("insertChain");
         state.removeChild (chain, nullptr);
+        auto synth = state.getChildWithName ("synthLayer");
+        state.removeChild (synth, nullptr);
         apvts.replaceState (state);
 
         // plugin instantiation must happen on the message thread
         juce::MessageManager::callAsync (
-            [safeThis = juce::WeakReference<EightyProcessor> (this), chain]
+            [safeThis = juce::WeakReference<EightyProcessor> (this), chain, synth]
             {
                 if (safeThis != nullptr)
-                    safeThis->restoreChainFromValueTree (chain);
+                    safeThis->restoreChainFromValueTree (chain, synth);
             });
     }
 }

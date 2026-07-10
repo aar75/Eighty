@@ -3,6 +3,7 @@
 #include <array>
 #include <random>
 #include <algorithm>
+#include <functional>
 #include "Voice.h"
 #include "LFO.h"
 
@@ -53,6 +54,12 @@ public:
     VoiceParams vp;          // shared voice parameter snapshot
     EngineSettings es;
 
+    // Echoes the engine's *effective* note stream (post hold-latch, post
+    // arpeggiator) so a hosted synth layer can follow it. sampleOffset is
+    // relative to the start of the current audio block.
+    std::function<void (int note, float vel, bool on, int sampleOffset)> noteEcho;
+    int echoBase = 0;        // set by the processor before midi-event calls
+
     void prepare (double sampleRate, int maxBlockSize)
     {
         sr = sampleRate;
@@ -94,6 +101,7 @@ public:
             addArpNote (note, vel);
             return;
         }
+        echo (note, vel, true, echoBase);
         triggerNote (note, vel);
     }
 
@@ -105,6 +113,7 @@ public:
         removeVal (latched, note);
 
         if (es.arpOn) { removeArpNote (note); return; }
+        echo (note, 0.f, false, echoBase);
         releaseNote (note);
     }
 
@@ -122,7 +131,7 @@ public:
                 {
                     removeVal (latched, n);
                     if (es.arpOn) removeArpNote (n);
-                    else          releaseNote (n);
+                    else          { echo (n, 0.f, false, echoBase); releaseNote (n); }
                 }
             }
         }
@@ -147,8 +156,9 @@ public:
 
     void allNotesOff()
     {
+        for (int n : latched) echo (n, 0.f, false, echoBase);
         physicalHeld.clear(); latched.clear(); arpNotes.clear(); monoStack.clear();
-        stopArpNote();
+        stopArpNote (echoBase);
         for (auto& v : voices) v.release();
     }
 
@@ -161,9 +171,10 @@ public:
     }
 
     // ---------------- Render ---------------------------------------------
-    void render (float* left, float* right, int numSamples)
+    void render (float* left, float* right, int numSamples, int blockOffset = 0)
     {
         if (numSamples <= 0) return;
+        renderBase = blockOffset;
 
         // Smooth pitch bend toward target (fast but click-free)
         const float bCoef = 1.f - std::exp (-(float) numSamples / ((float) sr * 0.005f));
@@ -197,16 +208,21 @@ public:
         if (nowOn)
         {
             // move currently latched notes into the arp
+            for (int n : latched) echo (n, 0.f, false, echoBase);
             for (auto& v : voices) v.release();
             arpNotes.clear();
             for (int n : latched) addArpNote (n, lastVelocity);
         }
         else
         {
-            stopArpNote();
+            stopArpNote (echoBase);
             arpNotes.clear();
             // retrigger latched notes as normal voices
-            for (int n : latched) triggerNote (n, lastVelocity);
+            for (int n : latched)
+            {
+                echo (n, lastVelocity, true, echoBase);
+                triggerNote (n, lastVelocity);
+            }
         }
     }
 
@@ -425,13 +441,13 @@ private:
             {
                 arpFireNow = false;
                 arpSampleCounter = 0;
-                advanceArpStep (stepLen);
+                advanceArpStep (stepLen, renderBase + pos);
             }
-            if (arpGateCounter == 0) { stopArpNote(); arpGateCounter = -1; }
+            if (arpGateCounter == 0) { stopArpNote (renderBase + pos); arpGateCounter = -1; }
             if (! arpNotes.empty() && arpSampleCounter >= stepLen)
             {
                 arpSampleCounter = 0;
-                advanceArpStep (stepLen);
+                advanceArpStep (stepLen, renderBase + pos);
             }
 
             // Render up to the next event boundary
@@ -446,9 +462,9 @@ private:
         }
     }
 
-    void advanceArpStep (int stepLen)
+    void advanceArpStep (int stepLen, int sampleOffset = 0)
     {
-        stopArpNote();
+        stopArpNote (sampleOffset);
         if (arpNotes.empty()) return;
 
         // Build the pattern: held notes expanded across octaves
@@ -493,15 +509,17 @@ private:
 
         auto& sel = pattern[(size_t) idx];
         int note = std::min (127, sel.note);
+        echo (note, sel.vel, true, sampleOffset);
         triggerNote (note, sel.vel);
         arpSounding = note;
         arpGateCounter = std::max (16, (int) (es.arpGate * (float) stepLen));
     }
 
-    void stopArpNote()
+    void stopArpNote (int sampleOffset = 0)
     {
         if (arpSounding >= 0)
         {
+            echo (arpSounding, 0.f, false, sampleOffset);
             if (es.mode == Mode::poly)
                 releaseNote (arpSounding);
             else
@@ -511,6 +529,11 @@ private:
             }
             arpSounding = -1;
         }
+    }
+
+    void echo (int note, float vel, bool on, int offset)
+    {
+        if (noteEcho) noteEcho (note, vel, on, offset);
     }
 
     static bool byPitch (const ArpNote& a, const ArpNote& b) { return a.note < b.note; }
@@ -528,7 +551,7 @@ private:
         for (int n : latched)
         {
             if (es.arpOn) removeArpNote (n);
-            else releaseNote (n);
+            else { echo (n, 0.f, false, echoBase); releaseNote (n); }
         }
         latched.clear();
         monoStack.clear();
@@ -546,6 +569,8 @@ private:
     int lastTriggeredNote = -1;
 
     float bendTarget = 0.f, bendCurrent = 0.f;
+
+    int renderBase = 0;
 
     // arp state
     std::vector<ArpNote> arpNotes, pattern;

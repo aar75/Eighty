@@ -4,12 +4,20 @@ A polyphonic synth plugin with **two engines — a Yamaha CS-80 model and a
 Roland Jupiter-8 model** — behind one clean, flat, readable digital UI
 (deliberately *not* a hardware panel clone). Built with JUCE.
 
-The ENGINE section picks what sounds: **CS-80** everywhere, **JP-8**
+The header engine chips pick what sounds: **CS-80** everywhere, **JP-8**
 everywhere, **Split** — a split key (with a CS LOW toggle for which side is
 which) routes each note to its engine — or **Layer**, which plays both
-engines on every note (in Unison mode the stack alternates engines). The
-PANEL buttons switch which engine's controls are shown; shared sections
-(LFO, Touch, Voices, Arp, FX) stay put. Every control has a hover tooltip.
+engines on every note (in Unison mode the stack alternates engines). A
+**CS/JP mix** knob balances the two engines in Split and Layer modes. The
+PANEL chips switch which engine's controls are shown — the JP-8 panel has
+its own slate-violet identity color; shared sections (LFO, Mix, Touch,
+Voices, Arp, FX) stay put.
+
+The UI is the "Cream Strip" design: a light cream panel with flat strip
+sections, vertical faders for primary parameters, small knobs for secondary
+ones, chip-stack selectors, LED toggles, and colored section underlines.
+Every control has a hover tooltip; touched values read out in the footer
+status line (so tooltips are never covered).
 
 ## Formats
 
@@ -70,10 +78,21 @@ sensitivity, master tune/volume.
 
 **VST3 insert chain** — the panel next to the keyboard loads up to four
 external VST3 effects at the end of the chain (post-FX, pre master volume).
-"+ ADD VST3" scans the standard VST3 folders (cached afterwards; instruments
-are filtered out), each loaded plugin opens its own editor window, and plugin
+"+ FX" scans the standard VST3 folders (cached afterwards; instruments are
+filtered out), each loaded plugin opens its own editor window, and plugin
 states are saved with the Eighty preset. Reported latency is forwarded to
 the host.
+
+**VST3 synth layer** — "+ SET SYNTH" in the same panel loads any VST3
+instrument as a third layer across all keys, with its own level knob. It's
+fed the engine's *effective* note stream — so it follows the arpeggiator,
+hold latch, pitch wheel, mod wheel and sustain pedal — and its audio runs
+through Eighty's FX chain.
+
+**Crash-safe plugin scanning** — scanning probes each plugin binary; if one
+kills the process, it's remembered via a dead-man's-pedal file, blacklisted
+on the next launch, and skipped forever after. Scan results are cached
+incrementally, so a rescan resumes where the crash happened.
 
 ## Computer keyboard
 
