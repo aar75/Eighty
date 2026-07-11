@@ -1,7 +1,7 @@
 #pragma once
 #include "PluginProcessor.h"
 
-// ------------------------------------------------- palette: "Cream Strip"
+// ---------------------------------------- palette: "Refined Cream Strip"
 namespace ui
 {
     const juce::Colour winBg     { 0xffece6da };   // cream panel
@@ -17,12 +17,14 @@ namespace ui
     const juce::Colour ledOff    { 0x2e2a2723 };
     const juce::Colour scopeBg   { 0xff201d18 };
     const juce::Colour scopeLine { 0xff3a352c };
-    const juce::Colour scopeTrace{ 0xffe8a33d };
-    const juce::Colour jpAccent  { 0xff5f57a8 };   // NEW: Jupiter-8 identity
+    const juce::Colour scopeTrace{ 0xffe8a33d };   // amber: traces + value arcs
+    const juce::Colour jpAccent  { 0xff5f57a8 };   // Jupiter-8 identity
+    const juce::Colour wheelBg   { 0xffddd5c4 };
+    const juce::Colour keyDown   { 0xffeec18a };
 
     // section stripes
     const juce::Colour stLfo   { 0xffb6412f };
-    const juce::Colour stOsc   { 0xffc97f2e };
+    const juce::Colour stOsc   { 0xffc97f2e };     // doubles as the CS accent
     const juce::Colour stMix   { 0xffa08a2f };
     const juce::Colour stFilt  { 0xff3f6ea5 };
     const juce::Colour stEnv   { 0xff4a8a58 };
@@ -65,22 +67,26 @@ public:
 };
 
 // ---------------------------------------------------------- fader / knob
+// Both carry a persistent mono value readout under the name label.
 class VFader : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     explicit VFader (const juce::String& labelText);
     void resized() override;
     LearnSlider slider;
-    juce::Label label;
+    juce::Label label, value;
 };
 
 class MiniKnob : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    explicit MiniKnob (const juce::String& labelText);
+    explicit MiniKnob (const juce::String& labelText, bool headerStyle = false);
     void resized() override;
     LearnSlider slider;
-    juce::Label label;
+    juce::Label label, value;
+    int knobSize = 0;      // 0 = derive from width (slot - 6)
+private:
+    bool header;
 };
 
 // -------------------------------------------------------------- chip stack
@@ -99,6 +105,7 @@ public:
     juce::String paramID;
 
 private:
+    int chipH() const { return labels.size() >= 6 ? 15 : 17; }
     juce::RangedAudioParameter& param;
     juce::ParameterAttachment att;
     juce::StringArray labels;
@@ -128,9 +135,26 @@ private:
     bool on = false;
 };
 
+// ----------------------------------------------------------- mini display
+// Small amber-on-dark readout at a section's top-right: filter response,
+// ADSR shape or LFO waveform, redrawn from the current parameter values.
+class MiniDisplay : public juce::Component, private juce::Timer
+{
+public:
+    enum Kind { filterKind, adsrKind, lfoKind };
+    MiniDisplay (Kind, std::vector<juce::RangedAudioParameter*> params);
+    void paint (juce::Graphics&) override;
+
+private:
+    void timerCallback() override;
+    Kind kind;
+    std::vector<juce::RangedAudioParameter*> params;
+    std::vector<float> cache;
+};
+
 // ----------------------------------------------------------------- section
 // Flat strip section: hairline left border, name + colored underline,
-// LED toggles top-right, bottom-aligned content items.
+// LED toggles (or a mini display) top-right, content items below.
 class Section : public juce::Component
 {
 public:
@@ -139,6 +163,7 @@ public:
     void resized() override;
     void addItem (juce::Component& c, int width);
     void addHeaderToggle (LedToggle& t);
+    void setDisplay (MiniDisplay* d, int width);
     int preferredWidth() const;
     void setStripe (juce::Colour c) { stripe = c; repaint(); }
 
@@ -148,6 +173,8 @@ private:
     struct Item { juce::Component* comp; int width; };
     std::vector<Item> items;
     std::vector<LedToggle*> headerToggles;
+    MiniDisplay* display = nullptr;
+    int displayW = 88;
 };
 
 // ------------------------------------------------------------------ scope
@@ -180,7 +207,7 @@ private:
     float value = 0.f;
 };
 
-// ------------------------------------------------- panel view chip switch
+// --------------------------------------------------- engine panel tabs
 class PanelChips : public juce::Component
 {
 public:
@@ -188,6 +215,8 @@ public:
     void setJp (bool jp) { jpSel = jp; repaint(); }
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
+
+    static constexpr int tabW = 180, tabGap = 6, totalW = tabW * 2 + tabGap;
 
 private:
     bool jpSel = false;
@@ -216,14 +245,6 @@ private:
     juce::MidiKeyboardComponent& kb;
     int mode = 2;
     uint8_t paintValue = 0;
-};
-
-// --------------------------------------------------- advanced panel card
-// Card that swaps in over the bottom row and hosts the secondary controls.
-class AdvancedPanel : public juce::Component
-{
-public:
-    void paint (juce::Graphics&) override;
 };
 
 // -------------------------------------------- selection ring (arrow keys)
@@ -287,7 +308,6 @@ private:
     void handleActionKey (juce::juce_wchar c);
     void showLearnMenu (const juce::String& paramID, juce::Point<int> screenPos);
     void setEngineView (bool jupiter);
-    void setAdvancedOpen (bool open);
     void updateModeVisibility (int mode);
     void layoutRows();
 
@@ -297,47 +317,41 @@ private:
     void adjustSelected (int dir);
     void updateHalo();
 
-    VFader*   makeFader (Section&, const juce::String& paramID, const juce::String& label);
+    VFader*   makeFader (Section&, const juce::String& paramID, const juce::String& label,
+                         int width = 28);
     MiniKnob* makeKnob  (Section&, const juce::String& paramID, const juce::String& label,
-                         int width = 60);
+                         int width = 40);
     ChipStack* makeChips (Section&, const juce::String& paramID,
-                          juce::StringArray labels, const juce::String& group, int width = 64);
+                          juce::StringArray labels, const juce::String& group, int width = 48);
     LedToggle* makeLed  (Section&, const juce::String& paramID, const juce::String& label);
     MiniKnob* makeHeaderKnob (const juce::String& paramID, const juce::String& label);
+    MiniDisplay* makeDisplay (Section&, MiniDisplay::Kind,
+                              std::initializer_list<const char*> paramIDs, int width);
+    void wireSlider (LearnSlider&, juce::Label& value, const juce::String& paramID);
 
     EightyProcessor& proc;
     CreamLNF lnf;
 
-    // shared sections
+    // shared sections (row 2)
     Section secLfo   { "LFO",       ui::stLfo },
-            secMix   { "MIX",       ui::stMix },
             secTouch { "TOUCH",     ui::stTouch },
             secVoice { "VOICES",    ui::stVoice },
             secArp   { "ARP / SEQ", ui::stLfo },
             secFx    { "EFFECTS",   ui::stFilt };
-    // CS-80 sections
+    // CS-80 sections (engine row)
     Section secOsc1  { "OSC I",      ui::stOsc },
             secOsc2  { "OSC II",     ui::stOsc },
+            secMix   { "MIX",        ui::stMix },
             secFilter{ "FILTER",     ui::stFilt },
             secFEnv  { "FILTER ENV", ui::stEnv },
             secAEnv  { "AMP ENV",    ui::stEnv };
-    // Jupiter-8 sections (unified JP accent stripe)
-    Section secVco1    { "VCO 1",      ui::jpAccent },
-            secVco2    { "VCO 2",      ui::jpAccent },
+    // Jupiter-8 sections (engine row, unified JP accent stripe)
+    Section secVco1    { "VCO 1",        ui::jpAccent },
+            secVco2    { "VCO 2",        ui::jpAccent },
+            secJpMix   { "MIX",          ui::jpAccent },
             secJpFilter{ "FILTER 12/24", ui::jpAccent },
-            secJpFEnv  { "FILTER ENV",   ui::jpAccent },
-            secJpAEnv  { "AMP ENV",      ui::jpAccent };
-    // advanced sections (live inside the advanced panel)
-    Section secAdvOsc1  { "OSC I +",  ui::stOsc },
-            secAdvOsc2  { "OSC II +", ui::stOsc },
-            secAdvFilter{ "FILTER +", ui::stFilt },
-            secAdvEnv   { "VELOCITY", ui::stEnv },
-            secAdvVoice { "VOICE +",  ui::stVoice },
-            secAdvVco   { "VCO +",    ui::jpAccent },
-            secAdvJpFilt{ "FILTER +", ui::jpAccent };
-    AdvancedPanel advPanel;
-    juce::TextButton advBtn { "ADVANCED" };
-    bool advOpen = false;
+            secJpFEnv  { "F.ENV",        ui::jpAccent },
+            secJpAEnv  { "A.ENV",        ui::jpAccent };
 
     ScopeComponent scope;
     PitchWheel wheel;
@@ -354,14 +368,14 @@ private:
     juce::TooltipWindow tooltipWindow { this, 400 };
     bool jpView = false;
 
-    juce::OwnedArray<juce::Component> owned;   // faders, knobs, chips, leds
+    juce::OwnedArray<juce::Component> owned;   // faders, knobs, chips, leds, displays
     juce::OwnedArray<juce::AudioProcessorValueTreeState::SliderAttachment> sliderAtts;
 
     std::vector<Ctl> controls;
     int selectedCtl = -1;
     int lastEngineMode = -1;
 
-    // footer readout
+    // LCD readout (tab band)
     juce::String readoutText;
     juce::uint32 readoutUntil = 0;
 
