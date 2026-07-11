@@ -4,6 +4,7 @@
 #include <random>
 #include <algorithm>
 #include <functional>
+#include <cstdint>
 #include "Voice.h"
 #include "LFO.h"
 
@@ -23,10 +24,12 @@ public:
     {
         // engine assignment: 0 = CS-80 everywhere, 1 = JP-8 everywhere,
         // 2 = keyboard split at splitPoint (csLow picks which side is CS),
-        // 3 = layer: every note plays both engines at once
+        // 3 = layer: every note plays both engines at once,
+        // 4 = per-key map (keyMap: 0 = CS-80, 1 = JP-8, 2 = both)
         int engineMode = 0;
         int splitPoint = 60;
         bool csLow = true;
+        std::array<uint8_t, 128> keyMap {};
 
         Mode mode = Mode::poly;
         int  polyVoices = 8;
@@ -227,15 +230,28 @@ public:
     }
 
 private:
-    bool layered() const { return es.engineMode == 3; }
-
-    int modelForNote (int note) const
+    // Which engine(s) a note plays. Fills models[0..1], returns the count.
+    int modelsForNote (int note, int* models) const
     {
-        if (es.engineMode == 0) return modelCS80;
-        if (es.engineMode == 1) return modelJP8;
-        if (es.engineMode == 3) return modelCS80;   // layer handled by callers
-        const bool low = note < es.splitPoint;
-        return (low == es.csLow) ? modelCS80 : modelJP8;
+        switch (es.engineMode)
+        {
+            case 0: models[0] = modelCS80; return 1;
+            case 1: models[0] = modelJP8;  return 1;
+            case 3: models[0] = modelCS80; models[1] = modelJP8; return 2;
+            case 4:
+            {
+                const int z = es.keyMap[(size_t) std::clamp (note, 0, 127)];
+                if (z >= 2) { models[0] = modelCS80; models[1] = modelJP8; return 2; }
+                models[0] = z == 1 ? modelJP8 : modelCS80;
+                return 1;
+            }
+            default:   // split
+            {
+                const bool low = note < es.splitPoint;
+                models[0] = (low == es.csLow) ? modelCS80 : modelJP8;
+                return 1;
+            }
+        }
     }
 
     // ---------------- Voice triggering ------------------------------------
@@ -297,34 +313,32 @@ private:
 
     void triggerPoly (int note, float vel)
     {
-        const int layers = layered() ? 2 : 1;
-        const float gain = layered() ? 0.72f : 1.f;
+        int models[2];
+        const int layers = modelsForNote (note, models);
+        const float gain = layers == 2 ? 0.72f : 1.f;
         float glideFrom = glideSource (false);
         for (int li = 0; li < layers; ++li)
         {
             Voice* v = allocateVoice();
-            const int model = layered() ? (li == 0 ? modelCS80 : modelJP8)
-                                        : modelForNote (note);
-            v->noteOn (note, vel, 0.f, 0.f, glideFrom, true, gain, model);
+            v->noteOn (note, vel, 0.f, 0.f, glideFrom, true, gain, models[li]);
             if (sustainPedal) v->setSustained (true);
         }
     }
 
     void triggerMono (int note, float vel, bool retrig)
     {
-        const int layers = layered() ? 2 : 1;
-        const float gain = layered() ? 0.72f : 1.f;
+        int models[2];
+        const int layers = modelsForNote (note, models);
+        const float gain = layers == 2 ? 0.72f : 1.f;
         for (int li = 0; li < layers; ++li)
         {
             Voice* v = &voices[li];
             float glideFrom = glideSource (v->wasActive());
-            const int model = layered() ? (li == 0 ? modelCS80 : modelJP8)
-                                        : modelForNote (note);
             if (! retrig && v->wasActive())
                 v->changeNote (note);
             else
                 v->noteOn (note, vel, 0.f, 0.f, glideFrom, retrig || ! v->wasActive(),
-                           gain, model);
+                           gain, models[li]);
             if (sustainPedal) v->setSustained (true);
         }
         // silence stray voices from a mode switch
@@ -338,13 +352,14 @@ private:
         const float maxDet = es.unisonDetune * 50.f;
         const float gain = 1.f / std::sqrt ((float) count);
         float glideFrom = glideSource (voices[0].wasActive());
+        int models[2];
+        const int numModels = modelsForNote (note, models);
         for (int i = 0; i < count; ++i)
         {
             float pos = count > 1 ? ((float) i / (float) (count - 1) - 0.5f) * 2.f : 0.f;
             Voice* v = &voices[i];
-            // layered unison alternates engines across the stack
-            const int model = layered() ? (i % 2 == 0 ? modelCS80 : modelJP8)
-                                        : modelForNote (note);
+            // two-engine notes alternate engines across the unison stack
+            const int model = models[i % numModels];
             if (! retrig && v->wasActive())
                 v->changeNote (note);
             else

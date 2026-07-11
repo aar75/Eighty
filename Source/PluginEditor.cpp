@@ -96,7 +96,10 @@ juce::String tipFor (const juce::String& id)
         { ID::tremDepth,   "Tremolo depth" },
         { ID::masterVol,  "Output volume" },
         { ID::masterTune, "Global tune, in cents" },
-        { ID::engineMode, "What sounds: one engine everywhere, Split by key, or Layer both engines on every note" },
+        { ID::limitDrive, "Output limiter: pushes the signal into a ceiling just under 0 dB. "
+                          "At 0 it is a transparent safety; turn up for loudness and squash" },
+        { ID::engineMode, "What sounds: one engine everywhere, Split by key, Layer both on every note, "
+                          "or Keys: paint each key's engine on the strip above the keyboard" },
         { ID::splitPoint, "Split key: notes below and above route to different engines (Split mode)" },
         { ID::splitCsLow, "CS-80 takes the low side of the split (off = JP-8 low)" },
         { ID::engineBalance, "Balance the CS-80 and JP-8 engines (Split & Layer modes). Center = both full" },
@@ -167,7 +170,7 @@ void CreamLNF::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h,
     g.setColour (ui::track);
     g.fillRoundedRectangle (cx - 2.f, (float) y, 4.f, (float) h, 2.f);
     // cap
-    const float capW = 22.f, capH = 13.f;
+    const float capW = 26.f, capH = 15.f;
     const float cy = juce::jlimit ((float) y, (float) (y + h) - capH, pos - capH * 0.5f);
     g.setColour (ui::ink);
     g.fillRoundedRectangle (cx - capW * 0.5f, cy, capW, capH, 2.f);
@@ -205,7 +208,7 @@ void CreamLNF::drawButtonBackground (juce::Graphics& g, juce::Button& b,
     g.drawRoundedRectangle (r, 3.f, 1.f);
 }
 
-juce::Font CreamLNF::getTextButtonFont (juce::TextButton&, int) { return ui::mono (10.f); }
+juce::Font CreamLNF::getTextButtonFont (juce::TextButton&, int) { return ui::mono (11.f); }
 juce::Font CreamLNF::getPopupMenuFont() { return ui::sans (13.f); }
 
 // ========================================================== fader / knob
@@ -217,7 +220,7 @@ VFader::VFader (const juce::String& text)
     addAndMakeVisible (slider);
     label.setText (text, juce::dontSendNotification);
     label.setJustificationType (juce::Justification::centred);
-    label.setFont (ui::sans (9.5f, true));
+    label.setFont (ui::sans (12.5f, true));
     label.setColour (juce::Label::textColourId, ui::inkSoft);
     label.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (label);
@@ -226,7 +229,7 @@ VFader::VFader (const juce::String& text)
 void VFader::resized()
 {
     auto b = getLocalBounds();
-    label.setBounds (b.removeFromBottom (13));
+    label.setBounds (b.removeFromBottom (20));
     slider.setBounds (b);
 }
 
@@ -238,7 +241,7 @@ MiniKnob::MiniKnob (const juce::String& text)
     addAndMakeVisible (slider);
     label.setText (text, juce::dontSendNotification);
     label.setJustificationType (juce::Justification::centred);
-    label.setFont (ui::sans (8.5f));
+    label.setFont (ui::sans (11.5f));
     label.setColour (juce::Label::textColourId, ui::mid);
     label.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (label);
@@ -247,8 +250,9 @@ MiniKnob::MiniKnob (const juce::String& text)
 void MiniKnob::resized()
 {
     auto b = getLocalBounds();
-    label.setBounds (b.removeFromBottom (12));
-    slider.setBounds (b.removeFromBottom (30).withSizeKeepingCentre (30, 30));
+    label.setBounds (b.removeFromBottom (18));
+    const int k = juce::jmin (getWidth(), juce::jmin (b.getHeight(), 52));
+    slider.setBounds (b.removeFromBottom (k).withSizeKeepingCentre (k, k));
 }
 
 // ============================================================== ChipStack
@@ -282,7 +286,7 @@ void ChipStack::paint (juce::Graphics& g)
             g.setColour (on ? fill : ui::track);
             g.drawRect (r, 1.f);
             g.setColour (on ? ui::cream : ui::dim);
-            g.setFont (ui::sans (9.5f, true));
+            g.setFont (ui::sans (11.5f, true));
             g.drawText (labels[i], r, juce::Justification::centred);
         }
         return;
@@ -290,12 +294,12 @@ void ChipStack::paint (juce::Graphics& g)
 
     // vertical: bottom group label, chips stacked above
     auto area = b;
-    auto gl = area.removeFromBottom (13);
+    auto gl = area.removeFromBottom (18);
     g.setColour (ui::dim);
-    g.setFont (ui::sans (8.f, true));
+    g.setFont (ui::sans (11.f, true));
     g.drawText (group, gl, juce::Justification::centred);
 
-    const int ch = 15;
+    const int ch = juce::jmin (22, juce::jmax (13, (area.getHeight() - 2) / n));
     int top = area.getBottom() - n * ch - 2;
     for (int i = 0; i < n; ++i)
     {
@@ -305,7 +309,7 @@ void ChipStack::paint (juce::Graphics& g)
         g.setColour (on ? onCol : ui::track);
         g.drawRect (r, 1.f);
         g.setColour (on ? ui::cream : ui::dim);
-        g.setFont (ui::sans (8.5f, true));
+        g.setFont (ui::sans (11.5f, true));
         g.drawText (labels[i], r, juce::Justification::centred);
     }
 }
@@ -324,8 +328,8 @@ void ChipStack::mouseDown (const juce::MouseEvent& e)
         idx = juce::jlimit (0, n - 1, e.x * n / juce::jmax (1, getWidth()));
     else
     {
-        const int ch = 15;
-        const int top = getHeight() - 13 - 2 - n * ch;
+        const int ch = juce::jmin (22, juce::jmax (13, (getHeight() - 18 - 2) / n));
+        const int top = getHeight() - 18 - 2 - n * ch;
         idx = juce::jlimit (0, n - 1, (e.y - top) / ch);
     }
     att.setValueAsCompleteGesture ((float) idx);
@@ -344,13 +348,13 @@ LedToggle::LedToggle (juce::RangedAudioParameter& p, const juce::String& t)
 
 int LedToggle::preferredWidth() const
 {
-    return 16 + (int) ui::sans (8.5f, true).getStringWidthFloat (text);
+    return 22 + (int) ui::sans (11.5f, true).getStringWidthFloat (text);
 }
 
 void LedToggle::paint (juce::Graphics& g)
 {
     auto b = getLocalBounds();
-    auto led = juce::Rectangle<float> (0.f, (float) b.getCentreY() - 3.5f, 7.f, 7.f);
+    auto led = juce::Rectangle<float> (0.f, (float) b.getCentreY() - 4.5f, 9.f, 9.f);
     g.setColour (on ? ui::ledOn : ui::ledOff);
     g.fillEllipse (led);
     if (on)
@@ -359,8 +363,8 @@ void LedToggle::paint (juce::Graphics& g)
         g.drawEllipse (led.expanded (2.f), 2.f);
     }
     g.setColour (on ? ui::ink : ui::dim);
-    g.setFont (ui::sans (8.5f, true));
-    g.drawText (text, b.withTrimmedLeft (11), juce::Justification::centredLeft);
+    g.setFont (ui::sans (11.5f, true));
+    g.drawText (text, b.withTrimmedLeft (14), juce::Justification::centredLeft);
 }
 
 void LedToggle::mouseDown (const juce::MouseEvent& e)
@@ -383,10 +387,10 @@ void Section::paint (juce::Graphics& g)
     g.fillRect (0, 4, 1, getHeight() - 8);      // hairline left border
 
     g.setColour (ui::ink);
-    g.setFont (ui::sans (10.f, true));
-    g.drawText (name, 14, 4, getWidth() - 20, 12, juce::Justification::centredLeft);
+    g.setFont (ui::sans (13.f, true));
+    g.drawText (name, 14, 4, getWidth() - 20, 18, juce::Justification::centredLeft);
     g.setColour (stripe);
-    g.fillRect (14, 18, 26, 3);
+    g.fillRect (14, 24, 32, 3);
 }
 
 void Section::addItem (juce::Component& c, int width)
@@ -405,7 +409,7 @@ int Section::preferredWidth() const
 {
     int w = 14 + 12;    // left border+pad, right pad
     for (size_t i = 0; i < items.size(); ++i)
-        w += items[i].width + (i > 0 ? 4 : 0);
+        w += items[i].width + (i > 0 ? 6 : 0);
     return w;
 }
 
@@ -417,17 +421,17 @@ void Section::resized()
     {
         const int w = (*it)->preferredWidth();
         tx -= w;
-        (*it)->setBounds (tx, 4, w, 14);
+        (*it)->setBounds (tx, 5, w, 20);
         tx -= 10;
     }
     // content, bottom-aligned
-    auto b = getLocalBounds().withTrimmedTop (24).withTrimmedLeft (14)
+    auto b = getLocalBounds().withTrimmedTop (32).withTrimmedLeft (14)
                              .withTrimmedRight (12).withTrimmedBottom (4);
     int x = b.getX();
     for (auto& it : items)
     {
         it.comp->setBounds (x, b.getY(), it.width, b.getHeight());
-        x += it.width + 4;
+        x += it.width + 6;
     }
 }
 
@@ -508,8 +512,8 @@ void PitchWheel::paint (juce::Graphics& g)
     g.fillRoundedRectangle (handle, 3.f);
 
     g.setColour (ui::dim);
-    g.setFont (ui::sans (8.f, true));
-    g.drawText ("BEND", getLocalBounds().removeFromBottom (11), juce::Justification::centred);
+    g.setFont (ui::sans (9.5f, true));
+    g.drawText ("BEND", getLocalBounds().removeFromBottom (13), juce::Justification::centred);
 }
 
 void PitchWheel::setFromMouse (const juce::MouseEvent& e)
@@ -548,7 +552,7 @@ void PanelChips::paint (juce::Graphics& g)
         g.setColour (on ? col : ui::track);
         g.drawRect (r, 1.f);
         g.setColour (on ? ui::cream : ui::dim);
-        g.setFont (ui::sans (9.f, true));
+        g.setFont (ui::sans (10.5f, true));
         g.drawText (names[i], r, juce::Justification::centred);
     }
 }
@@ -557,6 +561,146 @@ void PanelChips::mouseDown (const juce::MouseEvent& e)
 {
     const bool jp = e.x > getWidth() / 2;
     if (onSelect) onSelect (jp);
+}
+
+// =========================================================== KeyZoneStrip
+KeyZoneStrip::KeyZoneStrip (EightyProcessor& p, juce::MidiKeyboardComponent& keyboard)
+    : proc (p), kb (keyboard)
+{
+    setMode (2);
+}
+
+void KeyZoneStrip::setMode (int engineMode)
+{
+    mode = engineMode;
+    setTooltip (mode == 4
+        ? "Which engine each key triggers. Click: CS-80 > JP-8 > BOTH. Drag paints. Right-click: fill menu"
+        : "Key zones. Click or drag to move the split point");
+    repaint();
+}
+
+void KeyZoneStrip::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    g.setColour (ui::cardBg);
+    g.fillRoundedRectangle (r, 3.f);
+
+    const int splitNote = (int) proc.apvts.getRawParameterValue (ID::splitPoint)->load();
+    const bool csLow    = proc.apvts.getRawParameterValue (ID::splitCsLow)->load() > 0.5f;
+
+    for (int n = kb.getRangeStart(); n <= kb.getRangeEnd(); ++n)
+    {
+        auto kr = kb.getRectangleForKey (n);
+        if (kr.getRight() < 0.f || kr.getX() > (float) getWidth())
+            continue;
+
+        int zone;
+        if (mode == 2)
+            zone = ((n < splitNote) == csLow) ? 0 : 1;
+        else
+            zone = proc.getKeyZone (n);
+
+        const auto col = zone == 0 ? ui::ink : zone == 1 ? ui::jpAccent : ui::stOsc;
+        g.setColour (col.withAlpha (0.88f));
+        g.fillRect (kr.getX() + 0.5f, 2.f, kr.getWidth() - 1.f, (float) getHeight() - 4.f);
+    }
+
+    if (mode == 2)   // split point marker
+    {
+        const float x = kb.getRectangleForKey (splitNote).getX();
+        if (x >= 0.f && x <= (float) getWidth())
+        {
+            g.setColour (ui::ledOn);
+            g.fillRect (x - 1.f, 0.f, 2.f, (float) getHeight());
+        }
+    }
+}
+
+int KeyZoneStrip::noteAt (juce::Point<float> p) const
+{
+    return kb.getNoteAndVelocityAtPosition ({ p.x, 3.f }).note;
+}
+
+void KeyZoneStrip::applyPaint (int note)
+{
+    if (note < 0) return;
+    if (mode == 2)
+    {
+        if (auto* p = proc.apvts.getParameter (ID::splitPoint))
+        {
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (p->convertTo0to1 ((float) note));
+            p->endChangeGesture();
+        }
+    }
+    else
+        proc.setKeyZone (note, paintValue);
+    repaint();
+}
+
+void KeyZoneStrip::mouseDown (const juce::MouseEvent& e)
+{
+    if (e.mods.isPopupMenu())
+    {
+        if (mode == 4) showFillMenu();
+        return;
+    }
+    const int note = noteAt (e.position);
+    if (note < 0) return;
+    paintValue = (uint8_t) ((proc.getKeyZone (note) + 1) % 3);   // cycle on click
+    applyPaint (note);
+}
+
+void KeyZoneStrip::mouseDrag (const juce::MouseEvent& e)
+{
+    applyPaint (noteAt (e.position));
+}
+
+void KeyZoneStrip::showFillMenu()
+{
+    juce::PopupMenu m;
+    m.addSectionHeader ("Fill key map");
+    m.addItem (1, "All CS-80");
+    m.addItem (2, "All JP-8");
+    m.addItem (3, "All layered (both)");
+    m.addSeparator();
+    m.addItem (4, "CS-80 low / JP-8 high at split point");
+    m.addItem (5, "JP-8 low / CS-80 high at split point");
+    m.addItem (6, "Alternate octaves");
+    m.addItem (7, "Alternate notes");
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+        [this] (int result)
+        {
+            const int split = (int) proc.apvts.getRawParameterValue (ID::splitPoint)->load();
+            switch (result)
+            {
+                case 1: proc.fillKeyZones ([] (int)  { return (uint8_t) 0; }); break;
+                case 2: proc.fillKeyZones ([] (int)  { return (uint8_t) 1; }); break;
+                case 3: proc.fillKeyZones ([] (int)  { return (uint8_t) 2; }); break;
+                case 4: proc.fillKeyZones ([split] (int n) { return (uint8_t) (n < split ? 0 : 1); }); break;
+                case 5: proc.fillKeyZones ([split] (int n) { return (uint8_t) (n < split ? 1 : 0); }); break;
+                case 6: proc.fillKeyZones ([] (int n) { return (uint8_t) ((n / 12) % 2); }); break;
+                case 7: proc.fillKeyZones ([] (int n) { return (uint8_t) (n % 2); }); break;
+                default: return;
+            }
+            repaint();
+        });
+}
+
+// ========================================================== AdvancedPanel
+void AdvancedPanel::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (ui::cardBg);
+    g.fillRoundedRectangle (r, 6.f);
+    g.setColour (ui::ink);
+    g.drawRoundedRectangle (r, 6.f, 1.f);
+
+    g.setColour (ui::dim);
+    g.setFont (ui::sans (10.f, true));
+    g.drawText ("ADVANCED", getLocalBounds().reduced (16, 8),
+                juce::Justification::topRight);
 }
 
 // ============================================================ InsertPanel
@@ -642,9 +786,9 @@ void InsertPanel::paint (juce::Graphics& g)
     g.drawRoundedRectangle (r, 4.f, 1.f);
 
     g.setColour (ui::dim);
-    g.setFont (ui::sans (8.5f, true));
-    g.drawText ("SYNTH LAYER", 10, 5, 100, 10, juce::Justification::centredLeft);
-    g.drawText ("VST3 INSERTS", 10, 42, 100, 10, juce::Justification::centredLeft);
+    g.setFont (ui::sans (9.5f, true));
+    g.drawText ("SYNTH LAYER", 10, 6, 120, 11, juce::Justification::centredLeft);
+    g.drawText ("VST3 INSERTS", 10, 44, 120, 11, juce::Justification::centredLeft);
 }
 
 void InsertPanel::timerCallback()
@@ -702,14 +846,14 @@ void InsertPanel::refresh()
 void InsertPanel::resized()
 {
     auto b = getLocalBounds().reduced (8, 4);
-    b.removeFromTop (12);
-    auto synthRow = b.removeFromTop (20);
-    synthClearBtn.setBounds (synthRow.removeFromRight (18).reduced (1));
-    synthLevel.setBounds (synthRow.removeFromRight (22));
+    b.removeFromTop (14);
+    auto synthRow = b.removeFromTop (22);
+    synthClearBtn.setBounds (synthRow.removeFromRight (20).reduced (1));
+    synthLevel.setBounds (synthRow.removeFromRight (24));
     synthBtn.setBounds (synthRow.reduced (1));
 
-    b.removeFromTop (14);
-    const int rowH = 17;
+    b.removeFromTop (16);
+    const int rowH = 19;
     for (int i = 0; i < openBtns.size(); ++i)
     {
         auto row = b.removeFromTop (rowH);
@@ -797,7 +941,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     // ---- header
     titleLabel.setText ("EIGHTY", juce::dontSendNotification);
     {
-        auto f = ui::sans (20.f);
+        auto f = ui::sans (23.f);
         f.setExtraKerningFactor (0.28f);
         titleLabel.setFont (f);
     }
@@ -806,14 +950,14 @@ EightyEditor::EightyEditor (EightyProcessor& p)
 
     subLabel.setText ("CS-80 x JUPITER-8", juce::dontSendNotification);
     {
-        auto f = ui::sans (8.f, true);
+        auto f = ui::sans (9.f, true);
         f.setExtraKerningFactor (0.25f);
         subLabel.setFont (f);
     }
     subLabel.setColour (juce::Label::textColourId, ui::dim);
     addAndMakeVisible (subLabel);
 
-    statusLabel.setFont (ui::mono (10.f));
+    statusLabel.setFont (ui::mono (10.5f));
     statusLabel.setColour (juce::Label::textColourId, ui::dim);
     statusLabel.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (statusLabel);
@@ -821,16 +965,16 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     hintLabel.setText ("PLAY: A W S E D F T G Y H U J K O L P ;    Z/X octave    C/V velocity    B hold    N arp    "
                        "LEFT/RIGHT select    UP/DOWN adjust    SHIFT+UP/DOWN bend    right-click: MIDI learn",
                        juce::dontSendNotification);
-    hintLabel.setFont (ui::mono (9.f));
+    hintLabel.setFont (ui::mono (9.5f));
     hintLabel.setColour (juce::Label::textColourId, ui::dim);
-    hintLabel.setJustificationType (juce::Justification::centred);
+    hintLabel.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (hintLabel);
 
     // engine mode chips
     if (auto* param = proc.apvts.getParameter (ID::engineMode))
     {
         engineChips = std::make_unique<ChipStack> (*param,
-            juce::StringArray { "CS-80", "JP-8", "SPLIT", "LAYER" },
+            juce::StringArray { "CS-80", "JP-8", "SPLIT", "LAYER", "KEYS" },
             juce::String(), true);
         engineChips->setTooltip (tipFor (ID::engineMode));
         engineChips->onUserChange = [this] { paramTouched (ID::engineMode); };
@@ -858,9 +1002,10 @@ EightyEditor::EightyEditor (EightyProcessor& p)
         csLowLed->addMouseListener (this, true);
         addAndMakeVisible (*csLowLed);
     }
-    balKnob  = makeHeaderKnob (ID::engineBalance, "CS/JP");
-    volKnob  = makeHeaderKnob (ID::masterVol, "VOLUME");
-    tuneKnob = makeHeaderKnob (ID::masterTune, "TUNE");
+    balKnob   = makeHeaderKnob (ID::engineBalance, "CS/JP");
+    volKnob   = makeHeaderKnob (ID::masterVol, "VOLUME");
+    tuneKnob  = makeHeaderKnob (ID::masterTune, "TUNE");
+    limitKnob = makeHeaderKnob (ID::limitDrive, "LIMIT");
 
     // ---- shared sections
     makeChips (secLfo, ID::lfoWave, { "SIN", "TRI", "SQR", "SAW", "S&H" }, "WAVE");
@@ -872,25 +1017,27 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     addAndMakeVisible (secLfo);
 
     makeFader (secMix, ID::noiseLevel, "NOISE");
-    makeKnob  (secMix, ID::pwmRate, "PWM RT");
-    addAndMakeVisible (secMix);
+    makeKnob  (secMix, ID::pwmRate, "PWM RT", 56);
+    advPanel.addAndMakeVisible (secMix);
 
     makeFader (secTouch, ID::touchRise, "RISE");
     makeFader (secTouch, ID::touchToVib, "VIB");
     makeFader (secTouch, ID::touchToBright, "BRIGHT");
     makeFader (secTouch, ID::touchToLevel, "LEVEL");
-    addAndMakeVisible (secTouch);
+    advPanel.addAndMakeVisible (secTouch);
 
     makeChips (secVoice, ID::voiceMode, { "POLY", "MONO", "LEG", "UNI" }, "MODE");
     makeChips (secVoice, ID::glideMode, { "OFF", "LEG", "ALW" }, "GLIDE");
     makeKnob  (secVoice, ID::polyVoices, "VOICES");
-    makeKnob  (secVoice, ID::unisonCount, "UNI CNT");
-    makeKnob  (secVoice, ID::unisonDetune, "DETUNE");
-    makeKnob  (secVoice, ID::stereoSpread, "SPREAD");
-    makeKnob  (secVoice, ID::drift, "DRIFT");
     makeKnob  (secVoice, ID::glideTime, "GLIDE");
-    makeKnob  (secVoice, ID::bendRange, "BEND");
     addAndMakeVisible (secVoice);
+
+    makeKnob  (secAdvVoice, ID::unisonCount, "UNI CNT", 56);
+    makeKnob  (secAdvVoice, ID::unisonDetune, "DETUNE", 56);
+    makeKnob  (secAdvVoice, ID::stereoSpread, "SPREAD", 56);
+    makeKnob  (secAdvVoice, ID::drift, "DRIFT", 56);
+    makeKnob  (secAdvVoice, ID::bendRange, "BEND", 56);
+    advPanel.addAndMakeVisible (secAdvVoice);
 
     makeLed   (secArp, ID::arpOn, "ON");
     makeLed   (secArp, ID::hold, "HOLD");
@@ -923,10 +1070,12 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeFader (secOsc1, ID::osc1Saw, "SAW");
     makeFader (secOsc1, ID::osc1Pulse, "PULSE");
     makeFader (secOsc1, ID::osc1Level, "LEVEL");
-    makeKnob  (secOsc1, ID::osc1PW, "PW");
-    makeKnob  (secOsc1, ID::osc1PWM, "PWM");
-    makeKnob  (secOsc1, ID::osc1Fine, "FINE");
     addAndMakeVisible (secOsc1);
+
+    makeKnob  (secAdvOsc1, ID::osc1PW, "PW", 56);
+    makeKnob  (secAdvOsc1, ID::osc1PWM, "PWM", 56);
+    makeKnob  (secAdvOsc1, ID::osc1Fine, "FINE", 56);
+    advPanel.addAndMakeVisible (secAdvOsc1);
 
     makeLed   (secOsc2, ID::osc2On, "ON");
     makeChips (secOsc2, ID::osc2Foot, { "32'", "16'", "8'", "4'" }, "RANGE");
@@ -934,70 +1083,87 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeFader (secOsc2, ID::osc2Pulse, "PULSE");
     makeFader (secOsc2, ID::osc2Level, "LEVEL");
     makeKnob  (secOsc2, ID::osc2Semi, "SEMI");
-    makeKnob  (secOsc2, ID::osc2Fine, "FINE");
-    makeKnob  (secOsc2, ID::osc2PW, "PW");
-    makeKnob  (secOsc2, ID::osc2PWM, "PWM");
     addAndMakeVisible (secOsc2);
+
+    makeKnob  (secAdvOsc2, ID::osc2PW, "PW", 56);
+    makeKnob  (secAdvOsc2, ID::osc2PWM, "PWM", 56);
+    makeKnob  (secAdvOsc2, ID::osc2Fine, "FINE", 56);
+    advPanel.addAndMakeVisible (secAdvOsc2);
 
     makeFader (secFilter, ID::hpfCutoff, "HPF");
     makeFader (secFilter, ID::lpfCutoff, "LPF");
     makeFader (secFilter, ID::resonance, "RES");
     makeFader (secFilter, ID::filterEnvAmt, "ENV");
-    makeKnob  (secFilter, ID::keyTrack, "KEY TRK");
-    makeKnob  (secFilter, ID::filterDrive, "DRIVE");
     addAndMakeVisible (secFilter);
+
+    makeKnob  (secAdvFilter, ID::keyTrack, "KEY TRK", 56);
+    makeKnob  (secAdvFilter, ID::filterDrive, "DRIVE", 56);
+    advPanel.addAndMakeVisible (secAdvFilter);
+
+    makeKnob  (secAdvEnv, ID::velToFilter, "FILTER", 56);
+    makeKnob  (secAdvEnv, ID::velToAmp, "AMP", 56);
+    advPanel.addAndMakeVisible (secAdvEnv);
 
     makeFader (secFEnv, ID::fEnvA, "A");
     makeFader (secFEnv, ID::fEnvD, "D");
     makeFader (secFEnv, ID::fEnvS, "S");
     makeFader (secFEnv, ID::fEnvR, "R");
-    makeKnob  (secFEnv, ID::velToFilter, "VEL");
     addAndMakeVisible (secFEnv);
 
     makeFader (secAEnv, ID::aEnvA, "A");
     makeFader (secAEnv, ID::aEnvD, "D");
     makeFader (secAEnv, ID::aEnvS, "S");
     makeFader (secAEnv, ID::aEnvR, "R");
-    makeKnob  (secAEnv, ID::velToAmp, "VEL");
     addAndMakeVisible (secAEnv);
 
     // ---- Jupiter-8 sections
     makeChips (secVco1, ID::jpVco1Wave, { "TRI", "SAW", "PLS", "SQR" }, "WAVE");
     makeChips (secVco1, ID::jpVco1Range, { "16'", "8'", "4'", "2'" }, "RANGE");
     makeFader (secVco1, ID::jpMix, "MIX");
-    makeKnob  (secVco1, ID::jpPW, "PW");
-    makeKnob  (secVco1, ID::jpPWM, "PWM");
     addAndMakeVisible (secVco1);
 
     makeLed   (secVco2, ID::jpSync, "SYNC");
     makeChips (secVco2, ID::jpVco2Wave, { "TRI", "SAW", "PLS", "NSE" }, "WAVE");
     makeChips (secVco2, ID::jpVco2Range, { "16'", "8'", "4'", "2'" }, "RANGE");
     makeKnob  (secVco2, ID::jpVco2Semi, "SEMI");
-    makeKnob  (secVco2, ID::jpVco2Fine, "FINE");
     makeKnob  (secVco2, ID::jpXmod, "X-MOD");
     addAndMakeVisible (secVco2);
+
+    makeKnob  (secAdvVco, ID::jpPW, "PW", 56);
+    makeKnob  (secAdvVco, ID::jpPWM, "PWM", 56);
+    makeKnob  (secAdvVco, ID::jpVco2Fine, "FINE", 56);
+    advPanel.addAndMakeVisible (secAdvVco);
 
     makeLed   (secJpFilter, ID::jpSlope24, "24dB");
     makeFader (secJpFilter, ID::jpHpf, "HPF");
     makeFader (secJpFilter, ID::jpLpf, "LPF");
     makeFader (secJpFilter, ID::jpRes, "RES");
     makeFader (secJpFilter, ID::jpEnvAmt, "ENV");
-    makeKnob  (secJpFilter, ID::jpKeyTrk, "KEY TRK");
     addAndMakeVisible (secJpFilter);
+
+    makeKnob  (secAdvJpFilt, ID::jpKeyTrk, "KEY TRK", 56);
+    advPanel.addAndMakeVisible (secAdvJpFilt);
 
     makeFader (secJpFEnv, ID::jpFEnvA, "A");
     makeFader (secJpFEnv, ID::jpFEnvD, "D");
     makeFader (secJpFEnv, ID::jpFEnvS, "S");
     makeFader (secJpFEnv, ID::jpFEnvR, "R");
-    makeKnob  (secJpFEnv, ID::velToFilter, "VEL");
     addAndMakeVisible (secJpFEnv);
 
     makeFader (secJpAEnv, ID::jpAEnvA, "A");
     makeFader (secJpAEnv, ID::jpAEnvD, "D");
     makeFader (secJpAEnv, ID::jpAEnvS, "S");
     makeFader (secJpAEnv, ID::jpAEnvR, "R");
-    makeKnob  (secJpAEnv, ID::velToAmp, "VEL");
     addAndMakeVisible (secJpAEnv);
+
+    addChildComponent (advPanel);
+
+    advBtn.setWantsKeyboardFocus (false);
+    advBtn.setClickingTogglesState (true);
+    advBtn.setTooltip ("Show the advanced controls: mix, touch response, PW/PWM, "
+                       "fine tune, key tracking, velocity and unison settings");
+    advBtn.onClick = [this] { setAdvancedOpen (advBtn.getToggleState()); };
+    addAndMakeVisible (advBtn);
 
     addAndMakeVisible (scope);
 
@@ -1018,18 +1184,23 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     keyboard.setWantsKeyboardFocus (false);
     keyboard.setAvailableRange (24, 108);
     keyboard.setLowestVisibleKey (36);
-    keyboard.setKeyWidth (20.f);
+    keyboard.setKeyWidth (22.f);
     addAndMakeVisible (keyboard);
     addAndMakeVisible (insertPanel);
+
+    zoneStrip = std::make_unique<KeyZoneStrip> (proc, keyboard);
+    addChildComponent (*zoneStrip);
 
     addChildComponent (halo);
     halo.setAlwaysOnTop (true);
 
     setEngineView (false);
+    setAdvancedOpen (false);
+    updateModeVisibility ((int) proc.apvts.getRawParameterValue (ID::engineMode)->load());
     setWantsKeyboardFocus (true);
     addKeyListener (this);
     startTimerHz (30);
-    setSize (1480, 596);
+    setSize (1480, 692);
 }
 
 EightyEditor::~EightyEditor()
@@ -1062,13 +1233,14 @@ VFader* EightyEditor::makeFader (Section& s, const juce::String& paramID, const 
     const auto tip = tipFor (paramID);
     f->setTooltip (tip);
     f->slider.setTooltip (tip);
-    s.addItem (*f, 24);
+    s.addItem (*f, 38);
     controls.push_back ({ f, paramID });
     f->addMouseListener (this, true);
     return f;
 }
 
-MiniKnob* EightyEditor::makeKnob (Section& s, const juce::String& paramID, const juce::String& label)
+MiniKnob* EightyEditor::makeKnob (Section& s, const juce::String& paramID, const juce::String& label,
+                                  int width)
 {
     auto* k = new MiniKnob (label);
     owned.add (k);
@@ -1083,7 +1255,7 @@ MiniKnob* EightyEditor::makeKnob (Section& s, const juce::String& paramID, const
     const auto tip = tipFor (paramID);
     k->setTooltip (tip);
     k->slider.setTooltip (tip);
-    s.addItem (*k, 34);
+    s.addItem (*k, width);
     controls.push_back ({ k, paramID });
     k->addMouseListener (this, true);
     return k;
@@ -1157,7 +1329,42 @@ void EightyEditor::setEngineView (bool jupiter)
     secJpFilter.setVisible (jupiter);
     secJpFEnv.setVisible (jupiter);
     secJpAEnv.setVisible (jupiter);
+    secAdvOsc1.setVisible (! jupiter);
+    secAdvOsc2.setVisible (! jupiter);
+    secAdvFilter.setVisible (! jupiter);
+    secAdvVco.setVisible (jupiter);
+    secAdvJpFilt.setVisible (jupiter);
     panelChips.setJp (jupiter);
+
+    if (selectedCtl >= 0 && selectedCtl < (int) controls.size()
+        && ! controls[(size_t) selectedCtl].target->isShowing())
+        selectControl (-1);
+    layoutRows();
+    updateHalo();
+    repaint();
+}
+
+// show only the header controls that matter for the current engine mode
+void EightyEditor::updateModeVisibility (int mode)
+{
+    splitKnob->setVisible (mode == 2);
+    csLowLed->setVisible (mode == 2);
+    balKnob->setVisible (mode >= 2);
+    if (zoneStrip != nullptr)
+    {
+        zoneStrip->setMode (mode);
+        zoneStrip->setVisible (mode == 2 || mode == 4);
+    }
+}
+
+void EightyEditor::setAdvancedOpen (bool open)
+{
+    advOpen = open;
+    advBtn.setToggleState (open, juce::dontSendNotification);
+    secVoice.setVisible (! open);
+    secArp.setVisible (! open);
+    secFx.setVisible (! open);
+    advPanel.setVisible (open);
 
     if (selectedCtl >= 0 && selectedCtl < (int) controls.size()
         && ! controls[(size_t) selectedCtl].target->isShowing())
@@ -1268,7 +1475,7 @@ void EightyEditor::paint (juce::Graphics& g)
 {
     g.fillAll (ui::winBg);
     g.setColour (ui::line);
-    const int rowH = 176;
+    const int rowH = 216;
     g.drawHorizontalLine (72, 14.f, (float) getWidth() - 14.f);
     g.drawHorizontalLine (72 + rowH, 14.f, (float) getWidth() - 14.f);
     g.drawHorizontalLine (72 + rowH * 2, 14.f, (float) getWidth() - 14.f);
@@ -1276,68 +1483,80 @@ void EightyEditor::paint (juce::Graphics& g)
 
 void EightyEditor::layoutRows()
 {
-    const int rowH = 176;
-    auto placeRow = [] (std::vector<Section*> row, int x, int y, int h)
+    const int rowH = 216;
+
+    // sections keep their preferred width; leftover space becomes even gaps
+    auto placeRow = [] (const std::vector<Section*>& row, juce::Rectangle<int> area)
     {
+        int total = 0;
+        for (auto* s : row) total += s->preferredWidth();
+        const int n = (int) row.size();
+        const int gap = n > 1 ? juce::jlimit (0, 56, (area.getWidth() - total) / (n - 1)) : 0;
+        int x = area.getX();
         for (auto* s : row)
         {
-            s->setBounds (x, y, s->preferredWidth(), h);
-            x += s->preferredWidth();
+            s->setBounds (x, area.getY(), s->preferredWidth(), area.getHeight());
+            x += s->preferredWidth() + gap;
         }
     };
 
-    std::vector<Section*> row1;
-    if (jpView)
-        row1 = { &secLfo, &secVco1, &secVco2, &secMix, &secJpFilter, &secJpFEnv, &secJpAEnv };
-    else
-        row1 = { &secLfo, &secOsc1, &secOsc2, &secMix, &secFilter, &secFEnv, &secAEnv };
-    placeRow (row1, 14, 74, rowH - 2);
+    const auto rowArea = [this, rowH] (int index)
+    { return juce::Rectangle<int> (14, 74 + rowH * index, getWidth() - 28, rowH - 2); };
 
-    // hidden panel's sections share the same origin so switching is clean
-    std::vector<Section*> other;
     if (jpView)
-        other = { &secOsc1, &secOsc2, &secFilter, &secFEnv, &secAEnv };
+        placeRow ({ &secLfo, &secVco1, &secVco2, &secJpFilter, &secJpFEnv, &secJpAEnv },
+                  rowArea (0));
     else
-        other = { &secVco1, &secVco2, &secJpFilter, &secJpFEnv, &secJpAEnv };
-    int x = 14 + secLfo.preferredWidth();
-    for (auto* s : other)
-    {
-        s->setBounds (x, 74, s->preferredWidth(), rowH - 2);
-        x += s->preferredWidth();
-    }
+        placeRow ({ &secLfo, &secOsc1, &secOsc2, &secFilter, &secFEnv, &secAEnv },
+                  rowArea (0));
 
-    placeRow ({ &secTouch, &secVoice, &secArp, &secFx }, 14, 74 + rowH, rowH - 2);
+    placeRow ({ &secVoice, &secArp, &secFx }, rowArea (1));
+
+    advPanel.setBounds (rowArea (1));
+    if (jpView)
+        placeRow ({ &secAdvVco, &secMix, &secAdvJpFilt, &secAdvEnv, &secTouch, &secAdvVoice },
+                  advPanel.getLocalBounds().reduced (10, 6));
+    else
+        placeRow ({ &secAdvOsc1, &secAdvOsc2, &secMix, &secAdvFilter, &secAdvEnv, &secTouch, &secAdvVoice },
+                  advPanel.getLocalBounds().reduced (10, 6));
 }
 
 void EightyEditor::resized()
 {
     // header
-    titleLabel.setBounds (16, 10, 130, 24);
-    subLabel.setBounds (18, 34, 160, 12);
+    titleLabel.setBounds (16, 8, 150, 28);
+    subLabel.setBounds (18, 36, 170, 12);
 
-    engineChips->setBounds (190, 14, 4 * 54, 24);
-    panelChips.setBounds (190 + 4 * 54 + 14, 14, 170, 24);
+    engineChips->setBounds (180, 14, 5 * 58, 26);
+    panelChips.setBounds (180 + 5 * 58 + 12, 14, 190, 26);
 
-    int hx = 190 + 4 * 54 + 14 + 170 + 20;
-    splitKnob->setBounds (hx, 8, 40, 46);          hx += 44;
-    csLowLed->setBounds (hx, 22, csLowLed->preferredWidth() + 4, 14); hx += csLowLed->preferredWidth() + 14;
-    balKnob->setBounds (hx, 8, 40, 46);            hx += 52;
-    volKnob->setBounds (hx, 8, 40, 46);            hx += 44;
-    tuneKnob->setBounds (hx, 8, 40, 46);
+    int hx = 180 + 5 * 58 + 12 + 190 + 22;
+    splitKnob->setBounds (hx, 6, 48, 58);          hx += 54;
+    csLowLed->setBounds (hx, 24, csLowLed->preferredWidth() + 4, 20); hx += csLowLed->preferredWidth() + 16;
+    balKnob->setBounds (hx, 6, 48, 58);            hx += 56;
+    volKnob->setBounds (hx, 6, 48, 58);            hx += 54;
+    tuneKnob->setBounds (hx, 6, 48, 58);           hx += 54;
+    limitKnob->setBounds (hx, 6, 48, 58);
 
+    advBtn.setBounds (getWidth() - 254 - 106, 20, 94, 26);
     scope.setBounds (getWidth() - 254, 8, 240, 56);
-    statusLabel.setBounds (getWidth() - 620, 46, 360, 16);
 
     layoutRows();
 
-    // footer
-    const int fy = 74 + 176 * 2 + 4;
-    const int fh = getHeight() - fy - 20;
-    wheel.setBounds (14, fy, 40, fh);
-    const int insertW = 280;
-    keyboard.setBounds (14 + 40 + 8, fy, getWidth() - 14 * 2 - 40 - 8 - insertW - 8, fh);
+    // footer: key-zone strip above the keyboard, wheel and inserts full height
+    const int fy = 74 + 216 * 2 + 4;
+    const int fh = getHeight() - fy - 24;
+    wheel.setBounds (14, fy, 46, fh);
+    const int insertW = 290;
+    const int kbX = 14 + 46 + 8;
+    const int kbW = getWidth() - 14 * 2 - 46 - 8 - insertW - 8;
+    zoneStrip->setBounds (kbX, fy, kbW, 16);
+    keyboard.setBounds (kbX, fy + 18, kbW, fh - 18);
     insertPanel.setBounds (getWidth() - 14 - insertW, fy, insertW, fh);
-    hintLabel.setBounds (0, getHeight() - 16, getWidth(), 12);
+
+    // bottom strip: hints left, live readout right
+    hintLabel.setBounds (14, getHeight() - 18, getWidth() - 574, 14);
+    statusLabel.setBounds (getWidth() - 554, getHeight() - 18, 540, 14);
 
     updateHalo();
 }
@@ -1434,8 +1653,11 @@ void EightyEditor::timerCallback()
     {
         if (lastEngineMode >= 0 && mode < 2)
             setEngineView (mode == 1);
+        updateModeVisibility (mode);
         lastEngineMode = mode;
     }
+    if (zoneStrip != nullptr && zoneStrip->isVisible())
+        zoneStrip->repaint();      // tracks keyboard scrolling and param changes
 
     const bool shift = juce::ModifierKeys::currentModifiers.isShiftDown();
     const bool up   = shift && juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::upKey);

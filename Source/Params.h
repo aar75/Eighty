@@ -101,9 +101,10 @@ namespace ID
     // Master
     inline constexpr const char* masterVol  = "masterVol";
     inline constexpr const char* masterTune = "masterTune";
+    inline constexpr const char* limitDrive = "limitDrive";   // one-knob output limiter
 
     // Engine selection / keyboard split
-    inline constexpr const char* engineMode = "engineMode";   // CS-80 / JP-8 / Split
+    inline constexpr const char* engineMode = "engineMode";   // CS-80 / JP-8 / Split / Layer / Keys
     inline constexpr const char* splitPoint = "splitPoint";
     inline constexpr const char* splitCsLow = "splitCsLow";   // CS on the low side?
     inline constexpr const char* engineBalance = "engineBalance"; // CS <-> JP mix
@@ -263,10 +264,12 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         NormalisableRange<float>(-36.f, 6.f, 0.f), -6.f));
     p.push_back(std::make_unique<P>(ID::masterTune, "Tune",
         NormalisableRange<float>(-100.f, 100.f, 0.f), 0.f));
+    p.push_back(std::make_unique<P>(ID::limitDrive, "Limiter",
+        NormalisableRange<float>(0.f, 24.f, 0.f), 0.f));
 
     // Engine / split
     p.push_back(std::make_unique<Pc>(ID::engineMode, "Engine",
-        StringArray { "CS-80", "JP-8", "Split", "Layer" }, 0));
+        StringArray { "CS-80", "JP-8", "Split", "Layer", "Keys" }, 0));
     p.push_back(std::make_unique<Pi>(ID::splitPoint, "Split Point", 36, 84, 60));
     p.push_back(std::make_unique<Pb>(ID::splitCsLow, "CS Low", true));
     p.push_back(std::make_unique<P>(ID::engineBalance, "CS/JP Mix", pct, 0.5f));

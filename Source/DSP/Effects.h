@@ -152,4 +152,37 @@ public:
 private:
     float sr = 44100.f, phase = 0.f, inc = 0.f, depth = 0.5f;
 };
+
+// One-knob output limiter: drive (dB) pushed into a fixed ceiling just
+// under 0 dBFS. Instant attack on the stereo peak, smooth release; at
+// zero drive it still acts as a transparent output safety.
+class Limiter
+{
+public:
+    void prepare (double sampleRate)
+    {
+        release = 1.f - std::exp (-1.f / (0.06f * (float) sampleRate));
+        env = 0.f;
+    }
+
+    void setDrive (float dB) { drive = std::pow (10.f, dB / 20.f); }
+
+    void process (float* l, float* r, int n)
+    {
+        constexpr float ceiling = 0.98f;
+        for (int i = 0; i < n; ++i)
+        {
+            const float L = l[i] * drive, R = r[i] * drive;
+            const float peak = std::fmax (std::fabs (L), std::fabs (R));
+            if (peak > env) env = peak;                      // clamp instantly
+            else            env += (peak - env) * release;   // recover smoothly
+            const float g = env > ceiling ? ceiling / env : 1.f;
+            l[i] = L * g;
+            r[i] = R * g;
+        }
+    }
+
+private:
+    float release = 0.001f, drive = 1.f, env = 0.f;
+};
 } // namespace eighty

@@ -171,6 +171,15 @@ public:
     juce::String getSynthLayerName() const;
     juce::AudioPluginInstance* getSynthLayer() const;
 
+    // ---- per-key engine map (engine mode "Keys": 0 = CS, 1 = JP, 2 = both) ----
+    uint8_t getKeyZone (int note) const
+    { return keyZones[(size_t) juce::jlimit (0, 127, note)].load (std::memory_order_relaxed); }
+    void setKeyZone (int note, uint8_t zone)
+    { keyZones[(size_t) juce::jlimit (0, 127, note)].store ((uint8_t) juce::jmin (zone, (uint8_t) 2),
+                                                            std::memory_order_relaxed); }
+    void fillKeyZones (std::function<uint8_t (int)> zoneFor)
+    { for (int i = 0; i < 128; ++i) keyZones[(size_t) i].store (zoneFor (i), std::memory_order_relaxed); }
+
 private:
     void updateParameters();
     void handleMidiEvent (const juce::MidiMessage& m);
@@ -198,6 +207,9 @@ private:
     eighty::Chorus chorus;
     eighty::StereoDelay delay;
     eighty::Tremolo tremolo;
+    eighty::Limiter limiter;
+
+    std::array<std::atomic<uint8_t>, 128> keyZones;
 
     juce::AudioBuffer<float> scratch;
     bool lastArpOn = false;

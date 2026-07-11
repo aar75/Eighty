@@ -193,6 +193,39 @@ private:
     bool jpSel = false;
 };
 
+// ----------------------------------------------------- key zone strip
+// Sits above the keyboard. In Split mode it shows the two zones and a
+// click moves the split point; in Keys mode each key is painted with the
+// engine it triggers (click cycles CS -> JP -> BOTH, drag paints,
+// right-click opens a fill menu).
+class KeyZoneStrip : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    KeyZoneStrip (EightyProcessor&, juce::MidiKeyboardComponent&);
+    void setMode (int engineMode);           // 2 = split, 4 = keys
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+
+private:
+    int noteAt (juce::Point<float>) const;
+    void applyPaint (int note);
+    void showFillMenu();
+
+    EightyProcessor& proc;
+    juce::MidiKeyboardComponent& kb;
+    int mode = 2;
+    uint8_t paintValue = 0;
+};
+
+// --------------------------------------------------- advanced panel card
+// Card that swaps in over the bottom row and hosts the secondary controls.
+class AdvancedPanel : public juce::Component
+{
+public:
+    void paint (juce::Graphics&) override;
+};
+
 // -------------------------------------------- selection ring (arrow keys)
 class SelectionHalo : public juce::Component
 {
@@ -254,6 +287,8 @@ private:
     void handleActionKey (juce::juce_wchar c);
     void showLearnMenu (const juce::String& paramID, juce::Point<int> screenPos);
     void setEngineView (bool jupiter);
+    void setAdvancedOpen (bool open);
+    void updateModeVisibility (int mode);
     void layoutRows();
 
     struct Ctl { juce::Component* target; juce::String paramID; };
@@ -263,9 +298,10 @@ private:
     void updateHalo();
 
     VFader*   makeFader (Section&, const juce::String& paramID, const juce::String& label);
-    MiniKnob* makeKnob  (Section&, const juce::String& paramID, const juce::String& label);
+    MiniKnob* makeKnob  (Section&, const juce::String& paramID, const juce::String& label,
+                         int width = 60);
     ChipStack* makeChips (Section&, const juce::String& paramID,
-                          juce::StringArray labels, const juce::String& group, int width = 44);
+                          juce::StringArray labels, const juce::String& group, int width = 64);
     LedToggle* makeLed  (Section&, const juce::String& paramID, const juce::String& label);
     MiniKnob* makeHeaderKnob (const juce::String& paramID, const juce::String& label);
 
@@ -291,6 +327,17 @@ private:
             secJpFilter{ "FILTER 12/24", ui::jpAccent },
             secJpFEnv  { "FILTER ENV",   ui::jpAccent },
             secJpAEnv  { "AMP ENV",      ui::jpAccent };
+    // advanced sections (live inside the advanced panel)
+    Section secAdvOsc1  { "OSC I +",  ui::stOsc },
+            secAdvOsc2  { "OSC II +", ui::stOsc },
+            secAdvFilter{ "FILTER +", ui::stFilt },
+            secAdvEnv   { "VELOCITY", ui::stEnv },
+            secAdvVoice { "VOICE +",  ui::stVoice },
+            secAdvVco   { "VCO +",    ui::jpAccent },
+            secAdvJpFilt{ "FILTER +", ui::jpAccent };
+    AdvancedPanel advPanel;
+    juce::TextButton advBtn { "ADVANCED" };
+    bool advOpen = false;
 
     ScopeComponent scope;
     PitchWheel wheel;
@@ -300,7 +347,8 @@ private:
     PanelChips panelChips;
     std::unique_ptr<ChipStack> engineChips;
     MiniKnob *splitKnob = nullptr, *balKnob = nullptr,
-             *volKnob = nullptr, *tuneKnob = nullptr;
+             *volKnob = nullptr, *tuneKnob = nullptr, *limitKnob = nullptr;
+    std::unique_ptr<KeyZoneStrip> zoneStrip;
     std::unique_ptr<LedToggle> csLowLed;
     SelectionHalo halo;
     juce::TooltipWindow tooltipWindow { this, 400 };

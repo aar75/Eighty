@@ -9,6 +9,9 @@ EightyProcessor::EightyProcessor()
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
             raw[rp->paramID] = apvts.getRawParameterValue (rp->paramID);
 
+    // per-key engine map default: CS-80 below middle C, JP-8 above
+    fillKeyZones ([] (int note) { return (uint8_t) (note < 60 ? 0 : 1); });
+
     // engine note stream -> hosted synth layer
     engine.noteEcho = [this] (int note, float vel, bool on, int offset)
     {
@@ -212,6 +215,7 @@ void EightyProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     chorus.prepare (sampleRate, samplesPerBlock);
     delay.prepare (sampleRate);
     tremolo.prepare (sampleRate);
+    limiter.prepare (sampleRate);
     scratch.setSize (1, juce::jmax (samplesPerBlock, 32));
 
     synthBuf.setSize (2, juce::jmax (samplesPerBlock, 32));
@@ -362,6 +366,8 @@ void EightyProcessor::updateParameters()
     es.engineMode = (int) rawVal (ID::engineMode);
     es.splitPoint = (int) rawVal (ID::splitPoint);
     es.csLow      = rawVal (ID::splitCsLow) > 0.5f;
+    for (int i = 0; i < 128; ++i)
+        es.keyMap[(size_t) i] = keyZones[(size_t) i].load (std::memory_order_relaxed);
 
     // CS/JP balance only applies when both engines can sound (Split/Layer);
     // center = both at full, edges mute one side
@@ -563,6 +569,10 @@ void EightyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     if (buffer.getNumChannels() == 1)
         juce::FloatVectorOperations::multiply (right, gain, total);
 
+    // output limiter (always in circuit as a safety; the knob adds drive)
+    limiter.setDrive (rawVal (ID::limitDrive));
+    limiter.process (left, right, total);
+
     // scope feed (mono sum of the actual output, post everything)
     if (buffer.getNumChannels() > 1)
     {
@@ -583,6 +593,15 @@ void EightyProcessor::getStateInformation (juce::MemoryBlock& destData)
     auto state = apvts.copyState();
     state.removeChild (state.getChildWithName ("midiMap"), nullptr);
     state.appendChild (midiLearn.toValueTree(), nullptr);
+    state.removeChild (state.getChildWithName ("keyZones"), nullptr);
+    {
+        std::string zones (128, '0');
+        for (int i = 0; i < 128; ++i)
+            zones[(size_t) i] = (char) ('0' + getKeyZone (i));
+        juce::ValueTree kz ("keyZones");
+        kz.setProperty ("map", juce::String (zones), nullptr);
+        state.appendChild (kz, nullptr);
+    }
     state.removeChild (state.getChildWithName ("insertChain"), nullptr);
     state.appendChild (chainToValueTree(), nullptr);
     state.removeChild (state.getChildWithName ("synthLayer"), nullptr);
@@ -604,6 +623,15 @@ void EightyProcessor::setStateInformation (const void* data, int sizeInBytes)
         auto state = juce::ValueTree::fromXml (*xml);
         midiLearn.fromValueTree (state.getChildWithName ("midiMap"));
         state.removeChild (state.getChildWithName ("midiMap"), nullptr);
+
+        auto kz = state.getChildWithName ("keyZones");
+        if (kz.isValid())
+        {
+            const auto zones = kz.getProperty ("map").toString();
+            for (int i = 0; i < 128 && i < zones.length(); ++i)
+                setKeyZone (i, (uint8_t) juce::jlimit (0, 2, (int) (zones[i] - '0')));
+        }
+        state.removeChild (kz, nullptr);
 
         auto chain = state.getChildWithName ("insertChain");
         state.removeChild (chain, nullptr);
