@@ -214,6 +214,8 @@ private:
     juce::AudioBuffer<float> scratch;
     bool lastArpOn = false;
     bool lastHold = false;
+    bool lastSeqRec = false;
+    bool lastSeqPlay = false;
     double hostBpm = 120.0;
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (EightyProcessor)

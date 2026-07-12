@@ -31,10 +31,18 @@ public:
         bool csLow = true;
         std::array<uint8_t, 128> keyMap {};
 
-        Mode mode = Mode::poly;
-        int  polyVoices = 8;
-        int  unisonCount = 4;
-        float unisonDetune = 0.25f;  // 0..1 -> up to ~50 cents
+        // Per-engine voice mode: CS-80 and JP-8 run independent Poly/Mono/
+        // Legato/Unison settings, relevant whenever both can sound at once
+        // (Split/Layer/Keys engine modes).
+        struct VoiceCfg
+        {
+            Mode  mode = Mode::poly;
+            int   polyVoices = 8;
+            int   unisonCount = 4;
+            float unisonDetune = 0.25f;  // 0..1 -> up to ~50 cents
+        };
+        VoiceCfg csVoice, jpVoice;
+
         int  bendRange = 2;
         bool hold = false;
 
@@ -56,6 +64,56 @@ public:
 
     VoiceParams vp;          // shared voice parameter snapshot
     EngineSettings es;
+
+    // ---------------- Step sequencer --------------------------------------
+    // 16 fixed steps, tempo-synced to the arp's rate/div/sync/gate (the two
+    // are mutually exclusive - only one drives the engine at a time). REC
+    // captures notes as they're played, committing a step (as a chord) when
+    // all its notes are released; empty steps are rests. Owned here (rather
+    // than in EngineSettings) because the engine mutates it directly -
+    // recording auto-stops after the last step.
+    struct SeqStep { std::vector<std::pair<int, float>> notes; };  // note, vel; empty = rest
+    struct StepSeq
+    {
+        static constexpr int kSteps = 16;
+        std::array<SeqStep, kSteps> steps;
+        int recStep = 0;
+        std::vector<std::pair<int, float>> recChord;   // notes played for the step in progress
+        int recHeldCount = 0;                           // how many are still physically held
+        int playStep = -1;
+        std::vector<std::pair<int, float>> sounding;    // notes currently sounding during playback
+        int sampleCounter = 0, gateCounter = -1;
+        bool fireNow = false;
+    } seq;
+    bool seqRec = false, seqPlay = false;
+
+    // Called by the processor on the rising edge of the REC/PLAY toggles.
+    void seqRecStart()
+    {
+        seq.steps.fill (SeqStep {});
+        seq.recStep = 0;
+        seq.recChord.clear();
+        seq.recHeldCount = 0;
+        seqRec = true;
+    }
+
+    void seqPlayStart()
+    {
+        seq.playStep = -1;
+        seq.sampleCounter = 0;
+        seq.gateCounter = -1;
+        seq.fireNow = true;
+        seqPlay = true;
+    }
+
+    void seqPlayStop()
+    {
+        stopSeqStep (echoBase);
+        seq.playStep = -1;
+        seq.gateCounter = -1;
+        seq.fireNow = false;
+        seqPlay = false;
+    }
 
     // Echoes the engine's *effective* note stream (post hold-latch, post
     // arpeggiator) so a hosted synth layer can follow it. sampleOffset is
@@ -81,10 +139,13 @@ public:
         physicalHeld.clear();
         latched.clear();
         arpNotes.clear();
-        monoStack.clear();
+        monoStack[0].clear(); monoStack[1].clear();
         arpStep = 0; arpDir = 1; arpSampleCounter = 0; arpGateCounter = -1;
         arpSounding = -1;
         lfoEnvSeconds = 1000.f;
+
+        seq.playStep = -1; seq.sampleCounter = 0; seq.gateCounter = -1; seq.fireNow = false;
+        seq.sounding.clear();
     }
 
     // ---------------- MIDI-facing API (called between render segments) ----
@@ -99,11 +160,16 @@ public:
         if (physicalHeld.size() == 1)
             lfoEnvSeconds = 0.f;                 // restart LFO fade-in
 
+        if (seqRec)
+            seqRecNoteOn (note, vel);
+
         if (es.arpOn)
         {
             addArpNote (note, vel);
             return;
         }
+        if (seqPlay)
+            return;                              // sequencer playback owns the engine
         echo (note, vel, true, echoBase);
         triggerNote (note, vel);
     }
@@ -111,11 +177,14 @@ public:
     void noteOff (int note)
     {
         removeVal (physicalHeld, note);
+        if (seqRec)
+            seqRecNoteOff (note);
         if (es.hold)
             return;                              // latched until hold released
         removeVal (latched, note);
 
         if (es.arpOn) { removeArpNote (note); return; }
+        if (seqPlay) return;
         echo (note, 0.f, false, echoBase);
         releaseNote (note);
     }
@@ -160,8 +229,11 @@ public:
     void allNotesOff()
     {
         for (int n : latched) echo (n, 0.f, false, echoBase);
-        physicalHeld.clear(); latched.clear(); arpNotes.clear(); monoStack.clear();
+        physicalHeld.clear(); latched.clear(); arpNotes.clear();
+        monoStack[0].clear(); monoStack[1].clear();
         stopArpNote (echoBase);
+        stopSeqStep (echoBase);
+        seq.playStep = -1; seq.gateCounter = -1; seq.fireNow = false;
         for (auto& v : voices) v.release();
     }
 
@@ -201,6 +273,8 @@ public:
 
         if (es.arpOn)
             renderWithArp (left, right, numSamples);
+        else if (seqPlay)
+            renderWithSeq (left, right, numSamples);
         else
             renderVoices (left, right, 0, numSamples);
     }
@@ -230,6 +304,11 @@ public:
     }
 
 private:
+    EngineSettings::VoiceCfg& cfgFor (int model)
+    { return model == modelJP8 ? es.jpVoice : es.csVoice; }
+    const EngineSettings::VoiceCfg& cfgFor (int model) const
+    { return model == modelJP8 ? es.jpVoice : es.csVoice; }
+
     // Which engine(s) a note plays. Fills models[0..1], returns the count.
     int modelsForNote (int note, int* models) const
     {
@@ -255,26 +334,47 @@ private:
     }
 
     // ---------------- Voice triggering ------------------------------------
+    // A note may sound on one or both engines (modelsForNote); each engine
+    // dispatches through its own independent Poly/Mono/Legato/Unison mode.
     void triggerNote (int note, float vel)
     {
-        switch (es.mode)
+        int models[2];
+        const int layers = modelsForNote (note, models);
+        const float gain = layers == 2 ? 0.72f : 1.f;
+        for (int li = 0; li < layers; ++li)
+            triggerForModel (note, vel, models[li], gain);
+    }
+
+    void triggerForModel (int note, float vel, int model, float gain)
+    {
+        auto& cfg = cfgFor (model);
+        switch (cfg.mode)
         {
-            case Mode::poly:   triggerPoly (note, vel); break;
-            case Mode::mono:   triggerMono (note, vel, true); break;
-            case Mode::legato: triggerMono (note, vel, monoStack.empty()); break;
-            case Mode::unison: triggerUnison (note, vel, true); break;
+            case Mode::poly:   triggerPolyModel   (note, vel, model, gain); break;
+            case Mode::mono:   triggerMonoModel   (note, vel, model, gain, true); break;
+            case Mode::legato: triggerMonoModel   (note, vel, model, gain, monoStack[model].empty()); break;
+            case Mode::unison: triggerUnisonModel (note, vel, model, gain, true); break;
         }
-        if (es.mode != Mode::poly)
-            addUnique (monoStack, note);
-        lastTriggeredNote = note;
+        if (cfg.mode != Mode::poly)
+            addUnique (monoStack[model], note);
+        lastTriggeredNote[model] = note;
     }
 
     void releaseNote (int note)
     {
-        if (es.mode == Mode::poly)
+        int models[2];
+        const int layers = modelsForNote (note, models);
+        for (int li = 0; li < layers; ++li)
+            releaseForModel (note, models[li]);
+    }
+
+    void releaseForModel (int note, int model)
+    {
+        auto& cfg = cfgFor (model);
+        if (cfg.mode == Mode::poly)
         {
             for (auto& v : voices)
-                if (v.currentNote() == note && v.isHeld())
+                if (v.currentNote() == note && v.currentModel() == model && v.isHeld())
                 {
                     if (sustainPedal) v.setSustained (true);
                     v.noteOff();
@@ -282,84 +382,93 @@ private:
             return;
         }
 
-        removeVal (monoStack, note);
-        if (! monoStack.empty())
+        auto& stack = monoStack[model];
+        removeVal (stack, note);
+        if (! stack.empty())
         {
-            int back = monoStack.back();
-            if (back != soundingMonoNote())
+            const int back = stack.back();
+            if (back != soundingMonoNote (model))
             {
-                if (es.mode == Mode::mono)        triggerMono (back, lastVelocity, true);
-                else if (es.mode == Mode::legato) triggerMono (back, lastVelocity, false);
-                else                              triggerUnison (back, lastVelocity, false);
+                int mdls[2];
+                const int lyr = modelsForNote (back, mdls);
+                const float gain = lyr == 2 ? 0.72f : 1.f;
+                if (cfg.mode == Mode::mono)        triggerMonoModel   (back, lastVelocity, model, gain, true);
+                else if (cfg.mode == Mode::legato) triggerMonoModel   (back, lastVelocity, model, gain, false);
+                else                                triggerUnisonModel (back, lastVelocity, model, gain, false);
             }
         }
-        else
+        else if (cfg.mode == Mode::unison)
         {
-            for (auto& v : voices)
-                if (v.isHeld())
+            for (auto* v : unisonVoices[model])
+                if (v != nullptr && v->isHeld())
                 {
-                    if (sustainPedal) v.setSustained (true);
-                    v.noteOff();
+                    if (sustainPedal) v->setSustained (true);
+                    v->noteOff();
                 }
         }
-    }
-
-    int soundingMonoNote() const
-    {
-        for (auto& v : voices)
-            if (v.isHeld()) return v.currentNote();
-        return -1;
-    }
-
-    void triggerPoly (int note, float vel)
-    {
-        int models[2];
-        const int layers = modelsForNote (note, models);
-        const float gain = layers == 2 ? 0.72f : 1.f;
-        float glideFrom = glideSource (false);
-        for (int li = 0; li < layers; ++li)
+        else if (Voice* v = monoVoice[model])
         {
-            Voice* v = allocateVoice();
-            v->noteOn (note, vel, 0.f, 0.f, glideFrom, true, gain, models[li]);
-            if (sustainPedal) v->setSustained (true);
+            if (v->isHeld())
+            {
+                if (sustainPedal) v->setSustained (true);
+                v->noteOff();
+            }
         }
     }
 
-    void triggerMono (int note, float vel, bool retrig)
+    int soundingMonoNote (int model) const
     {
-        int models[2];
-        const int layers = modelsForNote (note, models);
-        const float gain = layers == 2 ? 0.72f : 1.f;
-        for (int li = 0; li < layers; ++li)
+        if (cfgFor (model).mode == Mode::unison)
         {
-            Voice* v = &voices[li];
-            float glideFrom = glideSource (v->wasActive());
-            if (! retrig && v->wasActive())
-                v->changeNote (note);
-            else
-                v->noteOn (note, vel, 0.f, 0.f, glideFrom, retrig || ! v->wasActive(),
-                           gain, models[li]);
-            if (sustainPedal) v->setSustained (true);
+            for (auto* v : unisonVoices[model])
+                if (v != nullptr && v->isHeld()) return v->currentNote();
+            return -1;
         }
-        // silence stray voices from a mode switch
-        for (int i = layers; i < kMaxVoices; ++i)
-            if (voices[i].isHeld()) voices[i].noteOff();
+        const Voice* v = monoVoice[model];
+        return (v != nullptr && v->isHeld()) ? v->currentNote() : -1;
     }
 
-    void triggerUnison (int note, float vel, bool retrig)
+    void triggerPolyModel (int note, float vel, int model, float gain)
     {
-        const int count = std::min (es.unisonCount, kMaxVoices);
-        const float maxDet = es.unisonDetune * 50.f;
-        const float gain = 1.f / std::sqrt ((float) count);
-        float glideFrom = glideSource (voices[0].wasActive());
-        int models[2];
-        const int numModels = modelsForNote (note, models);
+        float glideFrom = glideSource (model, false);
+        Voice* v = allocateVoice (model);
+        v->noteOn (note, vel, 0.f, 0.f, glideFrom, true, gain, model);
+        if (sustainPedal) v->setSustained (true);
+    }
+
+    void triggerMonoModel (int note, float vel, int model, float gain, bool retrig)
+    {
+        Voice*& v = monoVoice[model];
+        if (v == nullptr) v = allocateVoice (model);
+        float glideFrom = glideSource (model, v->wasActive());
+        if (! retrig && v->wasActive())
+            v->changeNote (note);
+        else
+            v->noteOn (note, vel, 0.f, 0.f, glideFrom, retrig || ! v->wasActive(), gain, model);
+        if (sustainPedal) v->setSustained (true);
+    }
+
+    void triggerUnisonModel (int note, float vel, int model, float noteGain, bool retrig)
+    {
+        auto& cfg = cfgFor (model);
+        const int count = std::min (cfg.unisonCount, kMaxVoices);
+        const float maxDet = cfg.unisonDetune * 50.f;
+        const float gain = noteGain / std::sqrt ((float) count);
+        auto& stack = unisonVoices[model];
+
+        float glideFrom = glideSource (model, ! stack.empty() && stack[0] != nullptr && stack[0]->wasActive());
+
+        // Resize the cached voice stack to the current unison count,
+        // stopping/dropping any extras (e.g. the count changed mid-hold).
+        for (size_t i = (size_t) count; i < stack.size(); ++i)
+            if (stack[i] != nullptr && stack[i]->isHeld()) stack[i]->noteOff();
+        stack.resize ((size_t) count, nullptr);
+
         for (int i = 0; i < count; ++i)
         {
             float pos = count > 1 ? ((float) i / (float) (count - 1) - 0.5f) * 2.f : 0.f;
-            Voice* v = &voices[i];
-            // two-engine notes alternate engines across the unison stack
-            const int model = models[i % numModels];
+            Voice*& v = stack[(size_t) i];
+            if (v == nullptr) v = allocateVoice (model);
             if (! retrig && v->wasActive())
                 v->changeNote (note);
             else
@@ -367,40 +476,57 @@ private:
                            retrig || ! v->wasActive(), gain, model);
             if (sustainPedal) v->setSustained (true);
         }
-        for (int i = count; i < kMaxVoices; ++i)
-            if (voices[i].isHeld()) voices[i].noteOff();
     }
 
-    float glideSource (bool voiceActive) const
+    float glideSource (int model, bool voiceActive) const
     {
-        if (vp.glideMode == 2 && lastTriggeredNote >= 0)   // always
-            return (float) lastTriggeredNote;
-        if (vp.glideMode == 1)                             // legato only
+        const int last = lastTriggeredNote[model];
+        if (vp.glideMode == 2 && last >= 0)   // always
+            return (float) last;
+        if (vp.glideMode == 1)                // legato only
         {
-            bool overlap = voiceActive || ! physicalHeld.empty() || ! monoStack.empty();
-            if (overlap && lastTriggeredNote >= 0)
-                return (float) lastTriggeredNote;
+            bool overlap = voiceActive || ! physicalHeld.empty() || ! monoStack[model].empty();
+            if (overlap && last >= 0)
+                return (float) last;
         }
         return -1.f;
     }
 
-    Voice* allocateVoice()
+    // Draws from the shared 16-voice pool but never lets one engine steal
+    // a voice actively serving the other engine while under its own cap -
+    // otherwise two independent per-engine polyphony limits would just
+    // fight over the same low index range.
+    Voice* allocateVoice (int model)
     {
-        const int limit = std::min (es.polyVoices, kMaxVoices);
-        // 1: free voice
-        for (int i = 0; i < limit; ++i)
-            if (! voices[i].wasActive()) return &voices[i];
-        // 2: quietest releasing voice
+        const int cap = std::min (cfgFor (model).polyVoices, kMaxVoices);
+        int activeForModel = 0;
+        for (auto& v : voices)
+            if (v.wasActive() && v.currentModel() == model) ++activeForModel;
+
+        if (activeForModel < cap)
+            for (auto& v : voices)
+                if (! v.wasActive()) return &v;
+
+        // At/over budget, or no free voice at all: steal this model's own
+        // quietest-releasing voice first, then its oldest.
         Voice* best = nullptr; float bestLevel = 1e9f;
-        for (int i = 0; i < limit; ++i)
-            if (voices[i].isReleasing() && voices[i].envLevel() < bestLevel)
-                { best = &voices[i]; bestLevel = voices[i].envLevel(); }
+        for (auto& v : voices)
+            if (v.currentModel() == model && v.isReleasing() && v.envLevel() < bestLevel)
+                { best = &v; bestLevel = v.envLevel(); }
         if (best) return best;
-        // 3: oldest
-        uint32_t oldest = 0xFFFFFFFFu; Voice* v = &voices[0];
-        for (int i = 0; i < limit; ++i)
-            if (voices[i].age() < oldest) { oldest = voices[i].age(); v = &voices[i]; }
-        return v;
+
+        uint32_t oldest = 0xFFFFFFFFu; Voice* pick = nullptr;
+        for (auto& v : voices)
+            if (v.currentModel() == model && v.age() < oldest) { oldest = v.age(); pick = &v; }
+        if (pick) return pick;
+
+        // This model has no voices of its own to steal from (the other
+        // engine currently holds all of them) - fall back to the globally
+        // oldest voice so we always return something playable.
+        oldest = 0xFFFFFFFFu; pick = &voices[0];
+        for (auto& v : voices)
+            if (v.age() < oldest) { oldest = v.age(); pick = &v; }
+        return pick;
     }
 
     void renderVoices (float* left, float* right, int offset, int num)
@@ -535,15 +661,108 @@ private:
         if (arpSounding >= 0)
         {
             echo (arpSounding, 0.f, false, sampleOffset);
-            if (es.mode == Mode::poly)
-                releaseNote (arpSounding);
-            else
+            int models[2];
+            const int layers = modelsForNote (arpSounding, models);
+            for (int li = 0; li < layers; ++li)
             {
-                monoStack.clear();
-                for (auto& v : voices) if (v.isHeld()) v.noteOff();
+                const int model = models[li];
+                if (cfgFor (model).mode == Mode::poly)
+                    releaseForModel (arpSounding, model);
+                else
+                {
+                    // Blanket stop rather than the usual mono/legato/unison
+                    // stack fallback, so the arp always goes fully silent.
+                    monoStack[model].clear();
+                    if (Voice* v = monoVoice[model]) if (v->isHeld()) v->noteOff();
+                    for (auto* v : unisonVoices[model]) if (v != nullptr && v->isHeld()) v->noteOff();
+                }
             }
             arpSounding = -1;
         }
+    }
+
+    // ---------------- Step sequencer: recording ----------------------------
+    void seqRecNoteOn (int note, float vel)
+    {
+        for (auto& p : seq.recChord) if (p.first == note) return;
+        seq.recChord.push_back ({ note, vel });
+        ++seq.recHeldCount;
+    }
+
+    void seqRecNoteOff (int note)
+    {
+        bool wasHeld = false;
+        for (auto& p : seq.recChord) if (p.first == note) { wasHeld = true; break; }
+        if (! wasHeld) return;
+        --seq.recHeldCount;
+        if (seq.recHeldCount <= 0 && ! seq.recChord.empty())
+        {
+            seq.steps[(size_t) seq.recStep].notes = seq.recChord;
+            seq.recChord.clear();
+            seq.recHeldCount = 0;
+            if (++seq.recStep >= StepSeq::kSteps)
+            {
+                seq.recStep = 0;
+                seqRec = false;
+            }
+        }
+    }
+
+    // ---------------- Step sequencer: playback ------------------------------
+    // Mirrors renderWithArp/advanceArpStep/stopArpNote, but always advances
+    // one step per tick (an empty step is a rest, not a pause) and fires
+    // every note in a step's chord simultaneously.
+    void renderWithSeq (float* left, float* right, int numSamples)
+    {
+        const int stepLen = arpStepLengthSamples();   // shares the arp's rate/div/sync
+        int pos = 0;
+        while (pos < numSamples)
+        {
+            if (seq.fireNow)
+            {
+                seq.fireNow = false;
+                seq.sampleCounter = 0;
+                advanceSeqStep (stepLen, renderBase + pos);
+            }
+            if (seq.gateCounter == 0) { stopSeqStep (renderBase + pos); seq.gateCounter = -1; }
+            if (seq.sampleCounter >= stepLen)
+            {
+                seq.sampleCounter = 0;
+                advanceSeqStep (stepLen, renderBase + pos);
+            }
+
+            int chunk = std::min (numSamples - pos, std::max (1, stepLen - seq.sampleCounter));
+            if (seq.gateCounter > 0) chunk = std::min (chunk, seq.gateCounter);
+
+            renderVoices (left, right, pos, chunk);
+            seq.sampleCounter += chunk;
+            if (seq.gateCounter > 0) seq.gateCounter -= chunk;
+            pos += chunk;
+        }
+    }
+
+    void advanceSeqStep (int stepLen, int sampleOffset)
+    {
+        stopSeqStep (sampleOffset);
+        seq.playStep = (seq.playStep + 1) % StepSeq::kSteps;
+        auto& st = seq.steps[(size_t) seq.playStep];
+        for (auto& n : st.notes)
+        {
+            echo (n.first, n.second, true, sampleOffset);
+            triggerNote (n.first, n.second);
+        }
+        seq.sounding = st.notes;
+        seq.gateCounter = st.notes.empty() ? -1 : std::max (16, (int) (es.arpGate * (float) stepLen));
+    }
+
+    void stopSeqStep (int sampleOffset)
+    {
+        for (auto& n : seq.sounding)
+        {
+            echo (n.first, 0.f, false, sampleOffset);
+            releaseNote (n.first);
+        }
+        seq.sounding.clear();
     }
 
     void echo (int note, float vel, bool on, int offset)
@@ -569,7 +788,7 @@ private:
             else { echo (n, 0.f, false, echoBase); releaseNote (n); }
         }
         latched.clear();
-        monoStack.clear();
+        monoStack[0].clear(); monoStack[1].clear();
     }
 
     double sr = 44100.0;
@@ -578,10 +797,13 @@ private:
     std::vector<float> lfoBuf, pwmBuf;
     float lfoEnvSeconds = 1000.f;
 
-    std::vector<int> physicalHeld, latched, monoStack;
+    std::vector<int> physicalHeld, latched;
+    std::vector<int> monoStack[2];             // per-model held-note stack (mono/legato/unison)
+    Voice* monoVoice[2] = { nullptr, nullptr }; // per-model sounding voice (mono/legato)
+    std::vector<Voice*> unisonVoices[2];        // per-model unison voice stack
     bool sustainPedal = false;
     float lastVelocity = 0.8f;
-    int lastTriggeredNote = -1;
+    int lastTriggeredNote[2] = { -1, -1 };
 
     float bendTarget = 0.f, bendCurrent = 0.f;
 

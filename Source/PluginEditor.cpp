@@ -85,10 +85,14 @@ juce::String tipFor (const juce::String& id)
         { ID::touchToVib,   "Pressure adds vibrato (real aftertouch works too)" },
         { ID::touchToBright,"Pressure opens the filter" },
         { ID::touchToLevel, "Pressure raises the volume" },
-        { ID::voiceMode,   "Poly plays chords; Mono retriggers; Legato doesn't; Unison stacks voices on one note" },
-        { ID::polyVoices,  "Maximum simultaneous voices" },
-        { ID::unisonCount, "Voices stacked per note in Unison mode" },
-        { ID::unisonDetune,"Detune spread across the unison stack" },
+        { ID::csVoiceMode,   "CS-80: Poly plays chords; Mono retriggers; Legato doesn't; Unison stacks voices on one note" },
+        { ID::csPolyVoices,  "CS-80: maximum simultaneous voices" },
+        { ID::csUnisonCount, "CS-80: voices stacked per note in Unison mode" },
+        { ID::csUnisonDetune,"CS-80: detune spread across the unison stack" },
+        { ID::jpVoiceMode,   "JP-8: Poly plays chords; Mono retriggers; Legato doesn't; Unison stacks voices on one note" },
+        { ID::jpPolyVoices,  "JP-8: maximum simultaneous voices" },
+        { ID::jpUnisonCount, "JP-8: voices stacked per note in Unison mode" },
+        { ID::jpUnisonDetune,"JP-8: detune spread across the unison stack" },
         { ID::stereoSpread,"Voice panning width: odd/even voice cards go left/right" },
         { ID::drift,       "Analog inconsistency: per-voice tuning, cutoff, envelope and pan tolerances" },
         { ID::glideTime,   "Portamento time between notes" },
@@ -96,6 +100,8 @@ juce::String tipFor (const juce::String& id)
         { ID::bendRange,   "Pitch wheel range, in semitones" },
         { ID::hold,        "Latch notes after release (shortcut: B). A new chord replaces the held one" },
         { ID::arpOn,     "Enable the arpeggiator (shortcut: N)" },
+        { ID::seqRec,    "Record a 16-step pattern: play notes or chords, each releases into the next step" },
+        { ID::seqPlay,   "Play/stop the recorded step pattern - takes over from the live keyboard while running" },
         { ID::arpMode,   "Note order. 'PLY' plays your held notes in order, like a step sequencer" },
         { ID::arpSync,   "Sync the rate to the host tempo" },
         { ID::arpRateHz, "Free-running rate, used when Sync is off" },
@@ -200,7 +206,7 @@ juce::String shortValueText (const juce::String& id, double val)
     if (in ({ ID::filterEnvAmt, ID::jpEnvAmt }))
         return (v >= 0.005f ? "+" : "") + juce::String (v, 2);
 
-    if (in ({ ID::polyVoices, ID::unisonCount, ID::arpOctaves }))
+    if (in ({ ID::csPolyVoices, ID::csUnisonCount, ID::jpPolyVoices, ID::jpUnisonCount, ID::arpOctaves }))
         return juce::String ((int) std::round (v));
 
     return juce::String (v, 2);
@@ -234,13 +240,25 @@ CreamLNF::CreamLNF()
 }
 
 void CreamLNF::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h,
-                                 float pos, float, float,
-                                 juce::Slider::SliderStyle, juce::Slider&)
+                                 float pos, float minSliderPos, float maxSliderPos,
+                                 juce::Slider::SliderStyle, juce::Slider& slider)
 {
     const float cx = (float) x + (float) w * 0.5f;
     // track
     g.setColour (ui::track);
     g.fillRoundedRectangle (cx - 2.f, (float) y, 4.f, (float) h, 2.f);
+
+    // Zero tick for bipolar faders (e.g. Filter Env, Fine tune) - marks
+    // where "off"/centred actually is, since the bottom of the fader is
+    // the minimum (often negative), not zero.
+    if (slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0)
+    {
+        const float zeroY = minSliderPos + (float) slider.valueToProportionOfLength (0.0)
+                                          * (maxSliderPos - minSliderPos);
+        g.setColour (ui::inkSoft);
+        g.fillRect (cx - 7.f, zeroY - 0.75f, 14.f, 1.5f);
+    }
+
     // cap with bg-colored center stripe
     const float capW = 22.f, capH = 12.f;
     const float cy = juce::jlimit ((float) y, (float) (y + h) - capH, pos - capH * 0.5f);
@@ -1345,18 +1363,28 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeFader (secTouch, ID::touchToLevel, "LEVEL", 26);
     addAndMakeVisible (secTouch);
 
-    makeChips (secVoice, ID::voiceMode, { "POLY", "MONO", "LEG", "UNI" }, "MODE", 44);
-    makeChips (secVoice, ID::glideMode, { "OFF", "LEG", "ALW" }, "GLIDE", 44);
-    makeKnob  (secVoice, ID::polyVoices, "VOICES", 36);
-    makeKnob  (secVoice, ID::unisonCount, "UNI CNT", 36);
-    makeKnob  (secVoice, ID::unisonDetune, "DETUNE", 36);
-    makeKnob  (secVoice, ID::stereoSpread, "SPREAD", 36);
-    makeKnob  (secVoice, ID::drift, "DRIFT", 36);
-    makeKnob  (secVoice, ID::glideTime, "GLIDE", 36);
-    makeKnob  (secVoice, ID::bendRange, "BEND", 36);
-    addAndMakeVisible (secVoice);
+    makeChips (secVoiceCS, ID::csVoiceMode, { "POLY", "MONO", "LEG", "UNI" }, "MODE", 44);
+    makeKnob  (secVoiceCS, ID::csPolyVoices, "VOICES", 36);
+    makeKnob  (secVoiceCS, ID::csUnisonCount, "UNI CNT", 36);
+    makeKnob  (secVoiceCS, ID::csUnisonDetune, "DETUNE", 36);
+    addAndMakeVisible (secVoiceCS);
+
+    makeChips (secVoiceJP, ID::jpVoiceMode, { "POLY", "MONO", "LEG", "UNI" }, "MODE", 44);
+    makeKnob  (secVoiceJP, ID::jpPolyVoices, "VOICES", 36);
+    makeKnob  (secVoiceJP, ID::jpUnisonCount, "UNI CNT", 36);
+    makeKnob  (secVoiceJP, ID::jpUnisonDetune, "DETUNE", 36);
+    addAndMakeVisible (secVoiceJP);
+
+    makeChips (secGlide, ID::glideMode, { "OFF", "LEG", "ALW" }, "GLIDE", 44);
+    makeKnob  (secGlide, ID::stereoSpread, "SPREAD", 36);
+    makeKnob  (secGlide, ID::drift, "DRIFT", 36);
+    makeKnob  (secGlide, ID::glideTime, "GLIDE", 36);
+    makeKnob  (secGlide, ID::bendRange, "BEND", 36);
+    addAndMakeVisible (secGlide);
 
     makeLed   (secArp, ID::arpOn, "ON");
+    makeLed   (secArp, ID::seqRec, "REC");
+    makeLed   (secArp, ID::seqPlay, "PLAY");
     makeLed   (secArp, ID::hold, "HOLD");
     makeLed   (secArp, ID::arpSync, "SYNC");
     makeChips (secArp, ID::arpMode, { "UP", "DN", "UD", "RND", "PLY" }, "MODE", 44);
@@ -1415,7 +1443,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     setWantsKeyboardFocus (true);
     addKeyListener (this);
     startTimerHz (30);
-    setSize (1480, 596);
+    setSize (1720, 596);
 }
 
 EightyEditor::~EightyEditor()
@@ -1584,6 +1612,12 @@ void EightyEditor::updateModeVisibility (int mode)
         zoneStrip->setMode (mode);
         zoneStrip->setVisible (mode == 2 || mode == 4);
     }
+
+    // CS-80/JP-8 voice-mode sections: each engine's own section shows
+    // whenever that engine can sound - both at once in Split/Layer/Keys.
+    secVoiceCS.setVisible (mode == 0 || mode >= 2);
+    secVoiceJP.setVisible (mode == 1 || mode >= 2);
+    layoutRows();
 }
 
 // ------------------------------------------------- selection & arrow keys
@@ -1734,7 +1768,13 @@ void EightyEditor::layoutRows()
         placeRow ({ &secOsc1, &secOsc2, &secMix, &secFilter, &secFEnv, &secAEnv },
                   engineArea);
 
-    placeRow ({ &secLfo, &secTouch, &secVoice, &secArp, &secFx }, sharedArea);
+    std::vector<Section*> shared { &secLfo, &secTouch };
+    if (secVoiceCS.isVisible()) shared.push_back (&secVoiceCS);
+    if (secVoiceJP.isVisible()) shared.push_back (&secVoiceJP);
+    shared.push_back (&secGlide);
+    shared.push_back (&secArp);
+    shared.push_back (&secFx);
+    placeRow (shared, sharedArea);
 }
 
 void EightyEditor::resized()

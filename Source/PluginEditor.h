@@ -333,11 +333,13 @@ private:
     CreamLNF lnf;
 
     // shared sections (row 2)
-    Section secLfo   { "LFO",       ui::stLfo },
-            secTouch { "TOUCH",     ui::stTouch },
-            secVoice { "VOICES",    ui::stVoice },
-            secArp   { "ARP / SEQ", ui::stLfo },
-            secFx    { "EFFECTS",   ui::stFilt };
+    Section secLfo     { "LFO",       ui::stLfo },
+            secTouch   { "TOUCH",     ui::stTouch },
+            secVoiceCS { "CS VOICES", ui::stVoice },
+            secVoiceJP { "JP VOICES", ui::stVoice },
+            secGlide   { "GLIDE",     ui::stVoice },
+            secArp     { "ARP / SEQ", ui::stLfo },
+            secFx      { "EFFECTS",   ui::stFilt };
     // CS-80 sections (engine row)
     Section secOsc1  { "OSC I",      ui::stOsc },
             secOsc2  { "OSC II",     ui::stOsc },

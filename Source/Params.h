@@ -62,11 +62,15 @@ namespace ID
     inline constexpr const char* touchToBright = "touchToBright";
     inline constexpr const char* touchToLevel  = "touchToLevel";
 
-    // Voices
-    inline constexpr const char* voiceMode    = "voiceMode";   // Poly / Mono / Legato / Unison
-    inline constexpr const char* polyVoices   = "polyVoices";
-    inline constexpr const char* unisonCount  = "unisonCount";
-    inline constexpr const char* unisonDetune = "unisonDetune";
+    // Voices (per-engine: CS-80 and JP-8 run independent mode/voice counts)
+    inline constexpr const char* csVoiceMode    = "csVoiceMode";   // Poly / Mono / Legato / Unison
+    inline constexpr const char* csPolyVoices   = "csPolyVoices";
+    inline constexpr const char* csUnisonCount  = "csUnisonCount";
+    inline constexpr const char* csUnisonDetune = "csUnisonDetune";
+    inline constexpr const char* jpVoiceMode    = "jpVoiceMode";
+    inline constexpr const char* jpPolyVoices   = "jpPolyVoices";
+    inline constexpr const char* jpUnisonCount  = "jpUnisonCount";
+    inline constexpr const char* jpUnisonDetune = "jpUnisonDetune";
     inline constexpr const char* stereoSpread = "stereoSpread";
     inline constexpr const char* drift        = "drift";       // analog inconsistency amount
     inline constexpr const char* glideTime    = "glideTime";
@@ -82,6 +86,11 @@ namespace ID
     inline constexpr const char* arpDiv     = "arpDiv";
     inline constexpr const char* arpOctaves = "arpOctaves";
     inline constexpr const char* arpGate    = "arpGate";
+
+    // Step sequencer (shares the arp's rate/div/sync/gate; mutually
+    // exclusive with the arpeggiator)
+    inline constexpr const char* seqRec  = "seqRec";
+    inline constexpr const char* seqPlay = "seqPlay";
 
     // FX
     inline constexpr const char* chorusOn    = "chorusOn";
@@ -185,7 +194,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<P>(ID::hpfCutoff, "HPF Cutoff", freqRange, 20.f));
     p.push_back(std::make_unique<P>(ID::lpfCutoff, "LPF Cutoff", freqRange, 9000.f));
     p.push_back(std::make_unique<P>(ID::resonance, "Resonance", pct, 0.15f));
-    p.push_back(std::make_unique<P>(ID::filterEnvAmt, "Filter Env", NormalisableRange<float>(-1.f, 1.f, 0.f), 0.35f));
+    p.push_back(std::make_unique<P>(ID::filterEnvAmt, "Filter Env", NormalisableRange<float>(-1.f, 1.f, 0.f), 0.f));
     p.push_back(std::make_unique<P>(ID::keyTrack, "Key Track", pct, 0.5f));
     p.push_back(std::make_unique<P>(ID::filterDrive, "Drive", pct, 0.2f));
 
@@ -217,12 +226,17 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<P>(ID::touchToBright, "Touch > Bright", pct, 0.2f));
     p.push_back(std::make_unique<P>(ID::touchToLevel,  "Touch > Level",  pct, 0.15f));
 
-    // Voices
-    p.push_back(std::make_unique<Pc>(ID::voiceMode, "Voice Mode",
+    // Voices (per-engine)
+    p.push_back(std::make_unique<Pc>(ID::csVoiceMode, "CS Voice Mode",
         StringArray { "Poly", "Mono", "Legato", "Unison" }, 0));
-    p.push_back(std::make_unique<Pi>(ID::polyVoices, "Voices", 1, 16, 8));
-    p.push_back(std::make_unique<Pi>(ID::unisonCount, "Unison Voices", 2, 8, 4));
-    p.push_back(std::make_unique<P>(ID::unisonDetune, "Unison Detune", pct, 0.25f));
+    p.push_back(std::make_unique<Pi>(ID::csPolyVoices, "CS Voices", 1, 16, 8));
+    p.push_back(std::make_unique<Pi>(ID::csUnisonCount, "CS Unison Voices", 2, 8, 4));
+    p.push_back(std::make_unique<P>(ID::csUnisonDetune, "CS Unison Detune", pct, 0.25f));
+    p.push_back(std::make_unique<Pc>(ID::jpVoiceMode, "JP Voice Mode",
+        StringArray { "Poly", "Mono", "Legato", "Unison" }, 0));
+    p.push_back(std::make_unique<Pi>(ID::jpPolyVoices, "JP Voices", 1, 16, 8));
+    p.push_back(std::make_unique<Pi>(ID::jpUnisonCount, "JP Unison Voices", 2, 8, 4));
+    p.push_back(std::make_unique<P>(ID::jpUnisonDetune, "JP Unison Detune", pct, 0.25f));
     p.push_back(std::make_unique<P>(ID::stereoSpread, "Spread", pct, 0.6f));
     p.push_back(std::make_unique<P>(ID::drift, "Drift", pct, 0.35f));
     p.push_back(std::make_unique<P>(ID::glideTime, "Glide", timeRange(0.f, 5.f), 0.05f));
@@ -242,6 +256,10 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         StringArray { "1/1", "1/2", "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32" }, 5));
     p.push_back(std::make_unique<Pi>(ID::arpOctaves, "Arp Octaves", 1, 4, 1));
     p.push_back(std::make_unique<P>(ID::arpGate, "Arp Gate", NormalisableRange<float>(0.05f, 1.f, 0.f), 0.6f));
+
+    // Step sequencer
+    p.push_back(std::make_unique<Pb>(ID::seqRec,  "Seq Rec",  false));
+    p.push_back(std::make_unique<Pb>(ID::seqPlay, "Seq Play", false));
 
     // FX
     p.push_back(std::make_unique<Pb>(ID::chorusOn, "Chorus On", true));
@@ -295,7 +313,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<P>(ID::jpLpf, "JP LPF", freqRange, 9000.f));
     p.push_back(std::make_unique<P>(ID::jpRes, "JP Res", pct, 0.15f));
     p.push_back(std::make_unique<Pb>(ID::jpSlope24, "24 dB", true));
-    p.push_back(std::make_unique<P>(ID::jpEnvAmt, "JP Env Amt", NormalisableRange<float>(-1.f, 1.f, 0.f), 0.35f));
+    p.push_back(std::make_unique<P>(ID::jpEnvAmt, "JP Env Amt", NormalisableRange<float>(-1.f, 1.f, 0.f), 0.f));
     p.push_back(std::make_unique<P>(ID::jpKeyTrk, "JP Key Trk", pct, 0.5f));
     p.push_back(std::make_unique<P>(ID::jpFEnvA, "JP F.Attack",  timeRange(0.001f, 10.f), 0.005f));
     p.push_back(std::make_unique<P>(ID::jpFEnvD, "JP F.Decay",   timeRange(0.005f, 10.f), 0.35f));

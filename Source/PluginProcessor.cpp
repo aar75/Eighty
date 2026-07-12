@@ -158,6 +158,29 @@ static juce::ValueTree pluginInstanceToTree (juce::AudioPluginInstance& p)
     return e;
 }
 
+static juce::String seqStepToString (const eighty::SynthEngine::SeqStep& step)
+{
+    juce::String s;
+    for (auto& n : step.notes)
+    {
+        if (s.isNotEmpty()) s << ",";
+        s << n.first << ":" << juce::String (n.second, 3);
+    }
+    return s;
+}
+
+static void seqStepFromString (const juce::String& s, eighty::SynthEngine::SeqStep& step)
+{
+    step.notes.clear();
+    if (s.isEmpty()) return;
+    for (auto tok : juce::StringArray::fromTokens (s, ",", ""))
+    {
+        const int note = tok.upToFirstOccurrenceOf (":", false, false).getIntValue();
+        const float vel = tok.fromFirstOccurrenceOf (":", false, false).getFloatValue();
+        step.notes.push_back ({ note, vel });
+    }
+}
+
 static bool descFromTree (const juce::ValueTree& e, juce::PluginDescription& desc)
 {
     if (auto descXml = juce::parseXML (e.getProperty ("desc").toString()))
@@ -386,10 +409,14 @@ void EightyProcessor::updateParameters()
     vp.glideMode    = (int) rawVal (ID::glideMode);
     vp.masterTuneCents = rawVal (ID::masterTune);
 
-    es.mode         = (SynthEngine::Mode) (int) rawVal (ID::voiceMode);
-    es.polyVoices   = (int) rawVal (ID::polyVoices);
-    es.unisonCount  = (int) rawVal (ID::unisonCount);
-    es.unisonDetune = rawVal (ID::unisonDetune);
+    es.csVoice.mode         = (SynthEngine::Mode) (int) rawVal (ID::csVoiceMode);
+    es.csVoice.polyVoices   = (int) rawVal (ID::csPolyVoices);
+    es.csVoice.unisonCount  = (int) rawVal (ID::csUnisonCount);
+    es.csVoice.unisonDetune = rawVal (ID::csUnisonDetune);
+    es.jpVoice.mode         = (SynthEngine::Mode) (int) rawVal (ID::jpVoiceMode);
+    es.jpVoice.polyVoices   = (int) rawVal (ID::jpPolyVoices);
+    es.jpVoice.unisonCount  = (int) rawVal (ID::jpUnisonCount);
+    es.jpVoice.unisonDetune = rawVal (ID::jpUnisonDetune);
     es.bendRange    = (int) rawVal (ID::bendRange);
 
     es.arpMode    = (int) rawVal (ID::arpMode);
@@ -406,14 +433,61 @@ void EightyProcessor::updateParameters()
     es.bpm      = hostBpm;
 
     // edge-detected toggles
-    const bool arpOn = rawVal (ID::arpOn) > 0.5f;
-    if (arpOn != lastArpOn)
+    // Arp and the step sequencer (REC/PLAY) are mutually exclusive - and
+    // REC/PLAY are mutually exclusive with each other - so whichever one
+    // just turned on forces the others off, params included (so the UI
+    // LEDs stay honest).
+    bool arpOnRaw   = rawVal (ID::arpOn)   > 0.5f;
+    bool seqRecRaw  = rawVal (ID::seqRec)  > 0.5f;
+    bool seqPlayRaw = rawVal (ID::seqPlay) > 0.5f;
+
+    const bool arpOnRising   = arpOnRaw   && ! lastArpOn;
+    const bool seqRecRising  = seqRecRaw  && ! lastSeqRec;
+    const bool seqPlayRising = seqPlayRaw && ! lastSeqPlay;
+
+    auto forceOff = [this] (const char* id) { apvts.getParameter (id)->setValueNotifyingHost (0.f); };
+
+    if (arpOnRising && (seqRecRaw || seqPlayRaw))
     {
-        es.arpOn = arpOn;
-        engine.arpModeChanged (arpOn);
-        lastArpOn = arpOn;
+        seqRecRaw = seqPlayRaw = false;
+        forceOff (ID::seqRec); forceOff (ID::seqPlay);
     }
-    es.arpOn = arpOn;
+    if ((seqRecRising || seqPlayRising) && arpOnRaw)
+    {
+        arpOnRaw = false;
+        forceOff (ID::arpOn);
+    }
+    if (seqRecRising && seqPlayRaw)  { seqPlayRaw = false; forceOff (ID::seqPlay); }
+    if (seqPlayRising && seqRecRaw)  { seqRecRaw = false;  forceOff (ID::seqRec); }
+
+    if (arpOnRaw != lastArpOn)
+    {
+        es.arpOn = arpOnRaw;
+        engine.arpModeChanged (arpOnRaw);
+        lastArpOn = arpOnRaw;
+    }
+    es.arpOn = arpOnRaw;
+
+    if (seqRecRaw != lastSeqRec)
+    {
+        if (seqRecRaw) engine.seqRecStart();
+        else           engine.seqRec = false;
+        lastSeqRec = seqRecRaw;
+    }
+    if (seqPlayRaw != lastSeqPlay)
+    {
+        if (seqPlayRaw) engine.seqPlayStart();
+        else            engine.seqPlayStop();
+        lastSeqPlay = seqPlayRaw;
+    }
+
+    // The engine auto-stops recording once the 16th step is committed;
+    // resync the REC param/LED when that happens outside the UI.
+    if (! engine.seqRec && lastSeqRec)
+    {
+        lastSeqRec = false;
+        forceOff (ID::seqRec);
+    }
 
     const bool holdOn = rawVal (ID::hold) > 0.5f;
     if (holdOn != lastHold)
@@ -602,6 +676,17 @@ void EightyProcessor::getStateInformation (juce::MemoryBlock& destData)
         kz.setProperty ("map", juce::String (zones), nullptr);
         state.appendChild (kz, nullptr);
     }
+    state.removeChild (state.getChildWithName ("seqPattern"), nullptr);
+    {
+        juce::ValueTree sp ("seqPattern");
+        for (int i = 0; i < eighty::SynthEngine::StepSeq::kSteps; ++i)
+        {
+            juce::ValueTree st ("step");
+            st.setProperty ("notes", seqStepToString (engine.seq.steps[(size_t) i]), nullptr);
+            sp.appendChild (st, nullptr);
+        }
+        state.appendChild (sp, nullptr);
+    }
     state.removeChild (state.getChildWithName ("insertChain"), nullptr);
     state.appendChild (chainToValueTree(), nullptr);
     state.removeChild (state.getChildWithName ("synthLayer"), nullptr);
@@ -632,6 +717,20 @@ void EightyProcessor::setStateInformation (const void* data, int sizeInBytes)
                 setKeyZone (i, (uint8_t) juce::jlimit (0, 2, (int) (zones[i] - '0')));
         }
         state.removeChild (kz, nullptr);
+
+        auto sp = state.getChildWithName ("seqPattern");
+        if (sp.isValid())
+        {
+            int i = 0;
+            for (auto st : sp)
+            {
+                if (i >= eighty::SynthEngine::StepSeq::kSteps) break;
+                if (st.hasType ("step"))
+                    seqStepFromString (st.getProperty ("notes").toString(), engine.seq.steps[(size_t) i]);
+                ++i;
+            }
+        }
+        state.removeChild (sp, nullptr);
 
         auto chain = state.getChildWithName ("insertChain");
         state.removeChild (chain, nullptr);

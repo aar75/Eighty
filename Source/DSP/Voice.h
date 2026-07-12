@@ -25,7 +25,7 @@ struct VoiceParams
     float noiseLevel = 0.f;
 
     float hpfCutoff = 20.f, lpfCutoff = 9000.f, resonance = 0.15f;
-    float filterEnvAmt = 0.35f, keyTrack = 0.5f, filterDrive = 0.2f;
+    float filterEnvAmt = 0.f, keyTrack = 0.5f, filterDrive = 0.2f;
 
     float fA = 0.005f, fD = 0.35f, fS = 0.4f, fR = 0.3f;
     float aA = 0.004f, aD = 0.4f,  aS = 0.8f, aR = 0.35f;
@@ -62,7 +62,7 @@ struct VoiceParams
         float xmod = 0.f;              // VCO2 -> VCO1 frequency cross-mod
         float hpf = 20.f, lpf = 9000.f, res = 0.15f;
         bool  slope24 = true;
-        float envAmt = 0.35f, keyTrack = 0.5f;
+        float envAmt = 0.f, keyTrack = 0.5f;
         float fA = 0.005f, fD = 0.35f, fS = 0.4f, fR = 0.3f;
         float aA = 0.004f, aD = 0.4f,  aS = 0.8f, aR = 0.35f;
     } jp;
@@ -168,6 +168,7 @@ public:
     bool isHeld() const          { return held; }
     bool isReleasing() const     { return aEnv.isReleasing(); }
     int  currentNote() const     { return note; }
+    int  currentModel() const    { return model; }
     float envLevel() const       { return aEnv.value(); }
     uint32_t age() const         { return serial; }
     void setPolyPressure (float p) { polyPressure = p; }
@@ -271,8 +272,10 @@ private:
             currentNoteF += (targetNoteF - currentNoteF) * coef;
         }
 
-        // --- Vibrato: global LFO routing + touch vibrato + mod wheel
-        const float vibCents = lfoVal * (P.lfoToPitch * P.lfoToPitch * 200.f
+        // --- Vibrato: global LFO routing + touch vibrato + mod wheel.
+        // Touch/mod-wheel vibrato rides the same LFO, so it must be gated
+        // by lfoToPitch too - otherwise LFO>Pitch=0 doesn't mean silent.
+        const float vibCents = lfoVal * P.lfoToPitch * (P.lfoToPitch * 200.f
                                          + pressure * P.touchToVib * 60.f
                                          + P.modWheel * 60.f);
 
