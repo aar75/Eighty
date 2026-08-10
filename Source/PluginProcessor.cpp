@@ -158,26 +158,40 @@ static juce::ValueTree pluginInstanceToTree (juce::AudioPluginInstance& p)
     return e;
 }
 
-static juce::String seqStepToString (const eighty::SynthEngine::SeqStep& step)
+// A track is one string: steps separated by ';', chord notes by ',', each
+// note as "pitch:velocity" (0-127). An empty step is a rest.
+static juce::String seqTrackToString (const eighty::SynthEngine::SeqTrack& track)
 {
     juce::String s;
-    for (auto& n : step.notes)
+    for (int i = 0; i < eighty::SynthEngine::SeqTrack::kSteps; ++i)
     {
-        if (s.isNotEmpty()) s << ",";
-        s << n.first << ":" << juce::String (n.second, 3);
+        if (i > 0) s << ";";
+        const auto& st = track.steps[(size_t) i];
+        for (uint8_t n = 0; n < st.count; ++n)
+        {
+            if (n > 0) s << ",";
+            s << (int) st.note[n] << ":" << (int) st.vel[n];
+        }
     }
     return s;
 }
 
-static void seqStepFromString (const juce::String& s, eighty::SynthEngine::SeqStep& step)
+static void seqTrackFromString (const juce::String& s, eighty::SynthEngine::SeqTrack& track)
 {
-    step.notes.clear();
-    if (s.isEmpty()) return;
-    for (auto tok : juce::StringArray::fromTokens (s, ",", ""))
+    using Step = eighty::SynthEngine::SeqStep;
+    auto steps = juce::StringArray::fromTokens (s, ";", "");
+    for (int i = 0; i < eighty::SynthEngine::SeqTrack::kSteps; ++i)
     {
-        const int note = tok.upToFirstOccurrenceOf (":", false, false).getIntValue();
-        const float vel = tok.fromFirstOccurrenceOf (":", false, false).getFloatValue();
-        step.notes.push_back ({ note, vel });
+        Step step;
+        if (i < steps.size() && steps[i].isNotEmpty())
+            for (auto tok : juce::StringArray::fromTokens (steps[i], ",", ""))
+            {
+                const int note = tok.upToFirstOccurrenceOf (":", false, false).getIntValue();
+                const int vel  = tok.fromFirstOccurrenceOf (":", false, false).getIntValue();
+                step.add (note, (float) juce::jlimit (1, 127, vel) / 127.f);
+            }
+        track.steps[(size_t) i].clear();
+        track.steps[(size_t) i] = step;
     }
 }
 
@@ -405,8 +419,10 @@ void EightyProcessor::updateParameters()
 
     vp.drift        = rawVal (ID::drift);
     vp.stereoSpread = rawVal (ID::stereoSpread);
-    vp.glideTime    = rawVal (ID::glideTime);
-    vp.glideMode    = (int) rawVal (ID::glideMode);
+    vp.glide[modelCS80].time = rawVal (ID::csGlideTime);
+    vp.glide[modelCS80].mode = (int) rawVal (ID::csGlideMode);
+    vp.glide[modelJP8].time  = rawVal (ID::jpGlideTime);
+    vp.glide[modelJP8].mode  = (int) rawVal (ID::jpGlideMode);
     vp.masterTuneCents = rawVal (ID::masterTune);
 
     es.csVoice.mode         = (SynthEngine::Mode) (int) rawVal (ID::csVoiceMode);
@@ -426,6 +442,19 @@ void EightyProcessor::updateParameters()
     es.arpOctaves = (int) rawVal (ID::arpOctaves);
     es.arpGate    = rawVal (ID::arpGate);
 
+    // sequencer track settings (the pattern itself lives in the engine and
+    // is edited directly by the grid)
+    {
+        auto& seq = engine.seq;
+        seq.recTrack = (int) rawVal (ID::seqTrack);
+        seq.tracks[0].mute   = rawVal (ID::seqAMute) > 0.5f;
+        seq.tracks[1].mute   = rawVal (ID::seqBMute) > 0.5f;
+        seq.tracks[0].engine = (int) rawVal (ID::seqAEng);
+        seq.tracks[1].engine = (int) rawVal (ID::seqBEng);
+        seq.tracks[0].length = (int) rawVal (ID::seqALen);
+        seq.tracks[1].length = (int) rawVal (ID::seqBLen);
+    }
+
     es.lfoRate  = rawVal (ID::lfoRate);
     es.lfoWave  = (int) rawVal (ID::lfoWave);
     es.lfoDelay = rawVal (ID::lfoDelay);
@@ -433,10 +462,11 @@ void EightyProcessor::updateParameters()
     es.bpm      = hostBpm;
 
     // edge-detected toggles
-    // Arp and the step sequencer (REC/PLAY) are mutually exclusive - and
-    // REC/PLAY are mutually exclusive with each other - so whichever one
-    // just turned on forces the others off, params included (so the UI
-    // LEDs stay honest).
+    // Arp and the step sequencer both want the step clock, so whichever
+    // just turned on forces the other off, params included (so the UI LEDs
+    // stay honest). REC and PLAY *do* coexist: recording writes at the
+    // cursor while playback runs, which is how you overdub the second
+    // track against the first.
     bool arpOnRaw   = rawVal (ID::arpOn)   > 0.5f;
     bool seqRecRaw  = rawVal (ID::seqRec)  > 0.5f;
     bool seqPlayRaw = rawVal (ID::seqPlay) > 0.5f;
@@ -457,9 +487,6 @@ void EightyProcessor::updateParameters()
         arpOnRaw = false;
         forceOff (ID::arpOn);
     }
-    if (seqRecRising && seqPlayRaw)  { seqPlayRaw = false; forceOff (ID::seqPlay); }
-    if (seqPlayRising && seqRecRaw)  { seqRecRaw = false;  forceOff (ID::seqRec); }
-
     if (arpOnRaw != lastArpOn)
     {
         es.arpOn = arpOnRaw;
@@ -499,10 +526,22 @@ void EightyProcessor::updateParameters()
 
 void EightyProcessor::handleMidiEvent (const juce::MidiMessage& m)
 {
+    auto markHeld = [this] (int note, int vel)
+    {
+        heldNoteVel[(size_t) juce::jlimit (0, 127, note)]
+            .store ((uint8_t) vel, std::memory_order_relaxed);
+    };
+
     if (m.isNoteOn())
+    {
+        markHeld (m.getNoteNumber(), juce::jlimit (1, 127, (int) m.getVelocity()));
         engine.noteOn (m.getNoteNumber(), m.getFloatVelocity());
+    }
     else if (m.isNoteOff())
+    {
+        markHeld (m.getNoteNumber(), 0);
         engine.noteOff (m.getNoteNumber());
+    }
     else if (m.isPitchWheel())
         engine.setPitchBend (m.getPitchWheelValue());
     else if (m.isChannelPressure())
@@ -510,7 +549,10 @@ void EightyProcessor::handleMidiEvent (const juce::MidiMessage& m)
     else if (m.isAftertouch())
         engine.setPolyPressure (m.getNoteNumber(), (float) m.getAfterTouchValue() / 127.f);
     else if (m.isAllNotesOff() || m.isAllSoundOff())
+    {
+        for (int i = 0; i < 128; ++i) markHeld (i, 0);
         engine.allNotesOff();
+    }
     else if (m.isController())
     {
         const int cc = m.getControllerNumber();
@@ -643,21 +685,28 @@ void EightyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     if (buffer.getNumChannels() == 1)
         juce::FloatVectorOperations::multiply (right, gain, total);
 
+    // stereo width (M/S): 0 = mono, 1 = neutral, 2 = double-wide. Widening
+    // the detuned voice spread is most of what makes a big patch feel big,
+    // so this sits right before the limiter and stays honest about level.
+    if (buffer.getNumChannels() > 1)
+    {
+        const float width = rawVal (ID::stereoWidth);
+        if (std::abs (width - 1.f) > 0.001f)
+            for (int i = 0; i < total; ++i)
+            {
+                const float m = 0.5f * (left[i] + right[i]);
+                const float s = 0.5f * (left[i] - right[i]) * width;
+                left[i]  = m + s;
+                right[i] = m - s;
+            }
+    }
+
     // output limiter (always in circuit as a safety; the knob adds drive)
     limiter.setDrive (rawVal (ID::limitDrive));
     limiter.process (left, right, total);
 
-    // scope feed (mono sum of the actual output, post everything)
-    if (buffer.getNumChannels() > 1)
-    {
-        if (scratch.getNumSamples() < total) scratch.setSize (1, total, false, false, true);
-        float* mono = scratch.getWritePointer (0);
-        for (int i = 0; i < total; ++i)
-            mono[i] = 0.5f * (left[i] + right[i]);
-        scopeFifo.push (mono, total);
-    }
-    else
-        scopeFifo.push (left, total);
+    // scope feed (stereo, post everything: waveform + lissajous)
+    scopeFifo.push (left, right, total);
 
     activeVoices.store (engine.activeVoiceCount());
 }
@@ -679,11 +728,11 @@ void EightyProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.removeChild (state.getChildWithName ("seqPattern"), nullptr);
     {
         juce::ValueTree sp ("seqPattern");
-        for (int i = 0; i < eighty::SynthEngine::StepSeq::kSteps; ++i)
+        for (int t = 0; t < eighty::SynthEngine::StepSeq::kTracks; ++t)
         {
-            juce::ValueTree st ("step");
-            st.setProperty ("notes", seqStepToString (engine.seq.steps[(size_t) i]), nullptr);
-            sp.appendChild (st, nullptr);
+            juce::ValueTree tr ("track");
+            tr.setProperty ("steps", seqTrackToString (engine.seq.tracks[(size_t) t]), nullptr);
+            sp.appendChild (tr, nullptr);
         }
         state.appendChild (sp, nullptr);
     }
@@ -722,11 +771,12 @@ void EightyProcessor::setStateInformation (const void* data, int sizeInBytes)
         if (sp.isValid())
         {
             int i = 0;
-            for (auto st : sp)
+            for (auto tr : sp)
             {
-                if (i >= eighty::SynthEngine::StepSeq::kSteps) break;
-                if (st.hasType ("step"))
-                    seqStepFromString (st.getProperty ("notes").toString(), engine.seq.steps[(size_t) i]);
+                if (i >= eighty::SynthEngine::StepSeq::kTracks) break;
+                if (tr.hasType ("track"))
+                    seqTrackFromString (tr.getProperty ("steps").toString(),
+                                        engine.seq.tracks[(size_t) i]);
                 ++i;
             }
         }

@@ -33,6 +33,17 @@ namespace ui
 
     juce::Font sans (float size, bool bold = false);
     juce::Font mono (float size);
+
+    // Fixed band layout, top to bottom. The window height is the sum of
+    // these, so a band only has to be edited in one place.
+    constexpr int headerH = 56;
+    constexpr int tabY    = headerH,      tabH    = 32;
+    constexpr int engineY = tabY + tabH,  engineH = 180;   // 88
+    constexpr int sharedY = engineY + engineH, sharedH = 180;   // 268
+    constexpr int seqY    = sharedY + sharedH, seqH    = 98;    // 448
+    constexpr int footerY = seqY + seqH,  footerH = 126;   // 546
+    constexpr int hintY   = footerY + footerH + 2;         // 674
+    constexpr int windowW = 1720, windowH = hintY + 20;    // 694
 }
 
 // ------------------------------------------------------------ LookAndFeel
@@ -103,6 +114,7 @@ public:
     std::function<void()> onUserChange;
     std::function<void (juce::Point<int>)> onRightClick;
     juce::String paramID;
+    int cellW = 55;          // horizontal mode only
 
 private:
     int chipH() const { return labels.size() >= 6 ? 15 : 17; }
@@ -178,17 +190,52 @@ private:
 };
 
 // ------------------------------------------------------------------ scope
-class ScopeComponent : public juce::Component, private juce::Timer
+// One tap drains the stereo scope FIFO and keeps the ring buffers; the
+// waveform trace and the lissajous both read from it, since a FIFO can
+// only be consumed once.
+class ScopeTap : private juce::Timer
 {
 public:
-    explicit ScopeComponent (ScopeFifo& fifo);
-    void paint (juce::Graphics&) override;
+    static constexpr int kHistory = 8192, kMask = kHistory - 1;
+
+    explicit ScopeTap (ScopeFifo& fifo);
+    void addView (juce::Component* c) { views.push_back (c); }
+
+    float left (int framesBack) const  { return l[(size_t) ((writePos - framesBack) & kMask)]; }
+    float right (int framesBack) const { return r[(size_t) ((writePos - framesBack) & kMask)]; }
+    int   pos() const { return writePos; }
+    float at (const std::vector<float>& buf, int idx) const { return buf[(size_t) (idx & kMask)]; }
+    const std::vector<float>& lBuf() const { return l; }
+    const std::vector<float>& rBuf() const { return r; }
 
 private:
     void timerCallback() override;
     ScopeFifo& fifo;
-    std::vector<float> history, display;
+    std::vector<float> l, r;
+    std::vector<juce::Component*> views;
     int writePos = 0;
+};
+
+class ScopeComponent : public juce::Component
+{
+public:
+    explicit ScopeComponent (ScopeTap& tap);
+    void paint (juce::Graphics&) override;
+
+private:
+    ScopeTap& tap;
+};
+
+// Vector display: L/R plotted rotated 45 degrees, so a mono signal draws a
+// vertical line and stereo width opens it out sideways.
+class LissajousScope : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit LissajousScope (ScopeTap& tap);
+    void paint (juce::Graphics&) override;
+
+private:
+    ScopeTap& tap;
 };
 
 // ------------------------------------------------------------ pitch wheel
@@ -245,6 +292,37 @@ private:
     juce::MidiKeyboardComponent& kb;
     int mode = 2;
     uint8_t paintValue = 0;
+};
+
+// -------------------------------------------------------- sequencer grid
+// Two tracks x 16 steps, drawn as a ruler plus two rows of cells. Click
+// moves the edit cursor (and drops any held notes into the step), vertical
+// drag transposes a step, right-click opens the step/track menu. The
+// playhead and the cursor are both drawn live.
+class SeqGrid : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit SeqGrid (EightyProcessor&);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+
+    std::function<void (const juce::String&)> onMessage;   // -> LCD readout
+
+    static constexpr int rulerH = 14, rowH = 32, rowGap = 2;
+    static int preferredHeight() { return rulerH + rowH * 2 + rowGap; }
+
+private:
+    int trackAt (juce::Point<int>) const;
+    int stepAt (juce::Point<int>) const;
+    juce::Rectangle<int> cellBounds (int track, int step) const;
+    void setCursor (int track, int step);
+    void showStepMenu (int track, int step);
+    void say (const juce::String& s) { if (onMessage) onMessage (s); }
+
+    EightyProcessor& proc;
+    int dragTrack = -1, dragStep = -1, dragStartY = 0, dragApplied = 0;
 };
 
 // -------------------------------------------- selection ring (arrow keys)
@@ -314,7 +392,8 @@ private:
     struct Ctl { juce::Component* target; juce::String paramID; };
     void selectControl (int index);
     void moveSelection (int dir);
-    void adjustSelected (int dir);
+    void adjustSelected (float amount);
+    void tickAdjustRamp();
     void updateHalo();
 
     VFader*   makeFader (Section&, const juce::String& paramID, const juce::String& label,
@@ -329,6 +408,12 @@ private:
                               std::initializer_list<const char*> paramIDs, int width);
     void wireSlider (LearnSlider&, juce::Label& value, const juce::String& paramID);
 
+    // sequencer row: controls that live loose on the editor, not in a Section
+    LedToggle*  makeLooseLed (const juce::String& paramID, const juce::String& label);
+    ChipStack*  makeLooseChips (const juce::String& paramID, juce::StringArray labels,
+                                const juce::String& group, int cellW);
+    void buildSeqRow();
+
     EightyProcessor& proc;
     CreamLNF lnf;
 
@@ -337,8 +422,8 @@ private:
             secTouch   { "TOUCH",     ui::stTouch },
             secVoiceCS { "CS VOICES", ui::stVoice },
             secVoiceJP { "JP VOICES", ui::stVoice },
-            secGlide   { "GLIDE",     ui::stVoice },
-            secArp     { "ARP / SEQ", ui::stLfo },
+            secGlide   { "GLOBAL",    ui::stVoice },
+            secArp     { "ARP",       ui::stLfo },
             secFx      { "EFFECTS",   ui::stFilt };
     // CS-80 sections (engine row)
     Section secOsc1  { "OSC I",      ui::stOsc },
@@ -355,15 +440,24 @@ private:
             secJpFEnv  { "F.ENV",        ui::jpAccent },
             secJpAEnv  { "A.ENV",        ui::jpAccent };
 
+    ScopeTap scopeTap;
     ScopeComponent scope;
+    LissajousScope lissajous;
     PitchWheel wheel;
     InsertPanel insertPanel;
+
+    // sequencer row
+    SeqGrid seqGrid;
+    LedToggle *seqRecLed = nullptr, *seqPlayLed = nullptr,
+              *seqMuteLed[2] = { nullptr, nullptr };
+    ChipStack *seqTrackChips = nullptr, *seqEngChips[2] = { nullptr, nullptr };
+    juce::TextButton seqClearBtn { "CLEAR" }, seqCopyBtn { "COPY" };
     juce::MidiKeyboardComponent keyboard;
     juce::Label titleLabel, subLabel, statusLabel, hintLabel;
     PanelChips panelChips;
     std::unique_ptr<ChipStack> engineChips;
-    MiniKnob *splitKnob = nullptr, *balKnob = nullptr,
-             *volKnob = nullptr, *tuneKnob = nullptr, *limitKnob = nullptr;
+    MiniKnob *splitKnob = nullptr, *balKnob = nullptr, *volKnob = nullptr,
+             *tuneKnob = nullptr, *limitKnob = nullptr, *widthKnob = nullptr;
     std::unique_ptr<KeyZoneStrip> zoneStrip;
     std::unique_ptr<LedToggle> csLowLed;
     SelectionHalo halo;
@@ -376,6 +470,13 @@ private:
     std::vector<Ctl> controls;
     int selectedCtl = -1;
     int lastEngineMode = -1;
+
+    // arrow-key value ramp: holding up/down sweeps continuously instead of
+    // firing one discrete step per key repeat
+    int   adjustDir = 0;
+    float adjustHeld = 0.f;     // seconds the key has been down (accelerates)
+    float adjustCarry = 0.f;    // sub-step remainder for stepped parameters
+    juce::RangedAudioParameter* adjustParam = nullptr;   // open gesture, if any
 
     // LCD readout (tab band)
     juce::String readoutText;

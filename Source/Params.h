@@ -73,8 +73,11 @@ namespace ID
     inline constexpr const char* jpUnisonDetune = "jpUnisonDetune";
     inline constexpr const char* stereoSpread = "stereoSpread";
     inline constexpr const char* drift        = "drift";       // analog inconsistency amount
-    inline constexpr const char* glideTime    = "glideTime";
-    inline constexpr const char* glideMode    = "glideMode";   // Off / Legato / Always
+    // Glide is per-engine: the CS-80 and JP-8 cards portamento independently
+    inline constexpr const char* csGlideTime  = "csGlideTime";
+    inline constexpr const char* csGlideMode  = "csGlideMode"; // Off / Legato / Always
+    inline constexpr const char* jpGlideTime  = "jpGlideTime";
+    inline constexpr const char* jpGlideMode  = "jpGlideMode";
     inline constexpr const char* bendRange    = "bendRange";
     inline constexpr const char* hold         = "hold";
 
@@ -87,10 +90,18 @@ namespace ID
     inline constexpr const char* arpOctaves = "arpOctaves";
     inline constexpr const char* arpGate    = "arpGate";
 
-    // Step sequencer (shares the arp's rate/div/sync/gate; mutually
-    // exclusive with the arpeggiator)
-    inline constexpr const char* seqRec  = "seqRec";
-    inline constexpr const char* seqPlay = "seqPlay";
+    // Step sequencer: 2 tracks x 16 steps, shares the arp's rate/div/sync/
+    // gate, mutually exclusive with the arpeggiator. Live playing runs on
+    // top of a running sequence.
+    inline constexpr const char* seqRec   = "seqRec";
+    inline constexpr const char* seqPlay  = "seqPlay";
+    inline constexpr const char* seqTrack = "seqTrack";   // armed / edited track
+    inline constexpr const char* seqAMute = "seqAMute";
+    inline constexpr const char* seqBMute = "seqBMute";
+    inline constexpr const char* seqAEng  = "seqAEng";    // Auto / CS-80 / JP-8
+    inline constexpr const char* seqBEng  = "seqBEng";
+    inline constexpr const char* seqALen  = "seqALen";
+    inline constexpr const char* seqBLen  = "seqBLen";
 
     // FX
     inline constexpr const char* chorusOn    = "chorusOn";
@@ -111,6 +122,7 @@ namespace ID
     inline constexpr const char* masterVol  = "masterVol";
     inline constexpr const char* masterTune = "masterTune";
     inline constexpr const char* limitDrive = "limitDrive";   // one-knob output limiter
+    inline constexpr const char* stereoWidth = "stereoWidth"; // M/S width, 1 = neutral
 
     // Engine selection / keyboard split
     inline constexpr const char* engineMode = "engineMode";   // CS-80 / JP-8 / Split / Layer / Keys
@@ -227,21 +239,22 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<P>(ID::touchToLevel,  "Touch > Level",  pct, 0.15f));
 
     // Voices (per-engine)
-    p.push_back(std::make_unique<Pc>(ID::csVoiceMode, "CS Voice Mode",
-        StringArray { "Poly", "Mono", "Legato", "Unison" }, 0));
+    StringArray voiceModes { "Poly", "Mono", "Legato", "Unison", "Stack" };
+    StringArray glideModes { "Off", "Legato", "Always" };
+    p.push_back(std::make_unique<Pc>(ID::csVoiceMode, "CS Voice Mode", voiceModes, 0));
     p.push_back(std::make_unique<Pi>(ID::csPolyVoices, "CS Voices", 1, 16, 8));
     p.push_back(std::make_unique<Pi>(ID::csUnisonCount, "CS Unison Voices", 2, 8, 4));
     p.push_back(std::make_unique<P>(ID::csUnisonDetune, "CS Unison Detune", pct, 0.25f));
-    p.push_back(std::make_unique<Pc>(ID::jpVoiceMode, "JP Voice Mode",
-        StringArray { "Poly", "Mono", "Legato", "Unison" }, 0));
+    p.push_back(std::make_unique<Pc>(ID::jpVoiceMode, "JP Voice Mode", voiceModes, 0));
     p.push_back(std::make_unique<Pi>(ID::jpPolyVoices, "JP Voices", 1, 16, 8));
     p.push_back(std::make_unique<Pi>(ID::jpUnisonCount, "JP Unison Voices", 2, 8, 4));
     p.push_back(std::make_unique<P>(ID::jpUnisonDetune, "JP Unison Detune", pct, 0.25f));
     p.push_back(std::make_unique<P>(ID::stereoSpread, "Spread", pct, 0.6f));
     p.push_back(std::make_unique<P>(ID::drift, "Drift", pct, 0.35f));
-    p.push_back(std::make_unique<P>(ID::glideTime, "Glide", timeRange(0.f, 5.f), 0.05f));
-    p.push_back(std::make_unique<Pc>(ID::glideMode, "Glide Mode",
-        StringArray { "Off", "Legato", "Always" }, 0));
+    p.push_back(std::make_unique<P>(ID::csGlideTime, "CS Glide", timeRange(0.f, 5.f), 0.05f));
+    p.push_back(std::make_unique<Pc>(ID::csGlideMode, "CS Glide Mode", glideModes, 0));
+    p.push_back(std::make_unique<P>(ID::jpGlideTime, "JP Glide", timeRange(0.f, 5.f), 0.05f));
+    p.push_back(std::make_unique<Pc>(ID::jpGlideMode, "JP Glide Mode", glideModes, 0));
     p.push_back(std::make_unique<Pi>(ID::bendRange, "Bend Range", 1, 24, 2));
     p.push_back(std::make_unique<Pb>(ID::hold, "Hold", false));
 
@@ -257,9 +270,18 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<Pi>(ID::arpOctaves, "Arp Octaves", 1, 4, 1));
     p.push_back(std::make_unique<P>(ID::arpGate, "Arp Gate", NormalisableRange<float>(0.05f, 1.f, 0.f), 0.6f));
 
-    // Step sequencer
+    // Step sequencer (2 tracks)
+    StringArray seqEngines { "Auto", "CS-80", "JP-8" };
     p.push_back(std::make_unique<Pb>(ID::seqRec,  "Seq Rec",  false));
     p.push_back(std::make_unique<Pb>(ID::seqPlay, "Seq Play", false));
+    p.push_back(std::make_unique<Pc>(ID::seqTrack, "Seq Track",
+        StringArray { "A", "B" }, 0));
+    p.push_back(std::make_unique<Pb>(ID::seqAMute, "Seq A Mute", false));
+    p.push_back(std::make_unique<Pb>(ID::seqBMute, "Seq B Mute", false));
+    p.push_back(std::make_unique<Pc>(ID::seqAEng, "Seq A Engine", seqEngines, 0));
+    p.push_back(std::make_unique<Pc>(ID::seqBEng, "Seq B Engine", seqEngines, 0));
+    p.push_back(std::make_unique<Pi>(ID::seqALen, "Seq A Length", 1, 16, 16));
+    p.push_back(std::make_unique<Pi>(ID::seqBLen, "Seq B Length", 1, 16, 16));
 
     // FX
     p.push_back(std::make_unique<Pb>(ID::chorusOn, "Chorus On", true));
@@ -284,6 +306,8 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         NormalisableRange<float>(-100.f, 100.f, 0.f), 0.f));
     p.push_back(std::make_unique<P>(ID::limitDrive, "Limiter",
         NormalisableRange<float>(0.f, 24.f, 0.f), 0.f));
+    p.push_back(std::make_unique<P>(ID::stereoWidth, "Width",
+        NormalisableRange<float>(0.f, 2.f, 0.f), 1.f));
 
     // Engine / split
     p.push_back(std::make_unique<Pc>(ID::engineMode, "Engine",

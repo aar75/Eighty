@@ -6,34 +6,37 @@
 #include "DSP/SynthEngine.h"
 #include "DSP/Effects.h"
 
-// Lock-free scope feed: audio thread pushes, UI thread pulls.
+// Lock-free scope feed: audio thread pushes, UI thread pulls. Stereo, so
+// the header can drive both the waveform trace and the lissajous/vector
+// display off one queue.
 class ScopeFifo
 {
 public:
-    static constexpr int kSize = 16384;
+    static constexpr int kSize = 16384;   // frames
 
-    void push (const float* data, int n)
+    void push (const float* l, const float* r, int n)
     {
         int s1, n1, s2, n2;
         fifo.prepareToWrite (n, s1, n1, s2, n2);
-        for (int i = 0; i < n1; ++i) buffer[(size_t) (s1 + i)] = data[i];
-        for (int i = 0; i < n2; ++i) buffer[(size_t) (s2 + i)] = data[n1 + i];
+        for (int i = 0; i < n1; ++i) { left[(size_t) (s1 + i)] = l[i];      right_[(size_t) (s1 + i)] = r[i]; }
+        for (int i = 0; i < n2; ++i) { left[(size_t) (s2 + i)] = l[n1 + i]; right_[(size_t) (s2 + i)] = r[n1 + i]; }
         fifo.finishedWrite (n1 + n2);
     }
 
-    int pull (float* dest, int maxN)
+    // Returns the number of frames written into destL / destR.
+    int pull (float* destL, float* destR, int maxFrames)
     {
         int s1, n1, s2, n2;
-        fifo.prepareToRead (maxN, s1, n1, s2, n2);
-        for (int i = 0; i < n1; ++i) dest[i] = buffer[(size_t) (s1 + i)];
-        for (int i = 0; i < n2; ++i) dest[n1 + i] = buffer[(size_t) (s2 + i)];
+        fifo.prepareToRead (maxFrames, s1, n1, s2, n2);
+        for (int i = 0; i < n1; ++i) { destL[i] = left[(size_t) (s1 + i)];      destR[i] = right_[(size_t) (s1 + i)]; }
+        for (int i = 0; i < n2; ++i) { destL[n1 + i] = left[(size_t) (s2 + i)]; destR[n1 + i] = right_[(size_t) (s2 + i)]; }
         fifo.finishedRead (n1 + n2);
         return n1 + n2;
     }
 
 private:
     juce::AbstractFifo fifo { kSize };
-    std::array<float, kSize> buffer {};
+    std::array<float, kSize> left {}, right_ {};
 };
 
 // CC -> parameter mapping with a "learn" handshake from the UI.
@@ -152,6 +155,11 @@ public:
     std::atomic<bool> uiBendActive { false };
     std::atomic<int> activeVoices { 0 };
     std::atomic<int> lastLearnedCC { -1 };
+
+    // Notes currently held on any input, velocity 1-127 (0 = up). The
+    // sequencer grid reads this so clicking a step can drop in whatever
+    // you are holding down.
+    std::array<std::atomic<uint8_t>, 128> heldNoteVel {};
 
     // ---- external VST3 insert chain (post-FX, pre master volume) ----
     juce::KnownPluginList knownPlugins;

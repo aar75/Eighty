@@ -18,7 +18,15 @@ class SynthEngine
 public:
     static constexpr int kMaxVoices = 16;
 
-    enum class Mode { poly = 0, mono, legato, unison };
+    enum class Mode { poly = 0, mono, legato, unison, stack };
+
+    // Mono/legato/unison share the per-model held-note stack and a cached
+    // voice (or voice group); poly and stack allocate freely per note.
+    static bool isMonoish (Mode m)
+    { return m == Mode::mono || m == Mode::legato || m == Mode::unison; }
+
+    // Stack may give a single note the entire pool - that is the point of it
+    static constexpr int kMaxStack = kMaxVoices;
 
     struct EngineSettings   // refreshed per block by the processor
     {
@@ -66,32 +74,78 @@ public:
     EngineSettings es;
 
     // ---------------- Step sequencer --------------------------------------
-    // 16 fixed steps, tempo-synced to the arp's rate/div/sync/gate (the two
-    // are mutually exclusive - only one drives the engine at a time). REC
-    // captures notes as they're played, committing a step (as a chord) when
-    // all its notes are released; empty steps are rests. Owned here (rather
-    // than in EngineSettings) because the engine mutates it directly -
-    // recording auto-stops after the last step.
-    struct SeqStep { std::vector<std::pair<int, float>> notes; };  // note, vel; empty = rest
-    struct StepSeq
+    // Two tracks x 16 steps, tempo-synced to the arp's rate/div/sync/gate
+    // (arp and sequencer are mutually exclusive - only one drives the step
+    // clock). Tracks share the clock but have independent lengths, so they
+    // can run polymetric. Live keyboard notes sound *over* a running
+    // sequence rather than being swallowed by it.
+    //
+    // The pattern is plain fixed-size POD, deliberately: the editor grid
+    // reads and writes it from the message thread while the audio thread
+    // plays it. No allocation, no pointers, nothing to tear - the worst a
+    // race can do is play a stale note for one step. `count` is always
+    // published last when adding and cleared first when removing.
+    struct SeqStep
+    {
+        static constexpr int kMaxNotes = 6;
+        int8_t  note[kMaxNotes] {};
+        uint8_t vel[kMaxNotes] {};
+        uint8_t count = 0;                 // 0 = rest
+
+        void clear() { count = 0; }
+        bool has (int n) const
+        {
+            for (uint8_t i = 0; i < count; ++i) if (note[i] == (int8_t) n) return true;
+            return false;
+        }
+        void add (int n, float v)
+        {
+            if (count >= kMaxNotes || has (n)) return;
+            note[count] = (int8_t) std::clamp (n, 0, 127);
+            vel[count]  = (uint8_t) std::clamp ((int) (v * 127.f), 1, 127);
+            ++count;
+        }
+        void transpose (int semis)
+        {
+            for (uint8_t i = 0; i < count; ++i)
+                note[i] = (int8_t) std::clamp ((int) note[i] + semis, 0, 127);
+        }
+    };
+
+    struct SeqTrack
     {
         static constexpr int kSteps = 16;
-        std::array<SeqStep, kSteps> steps;
-        int recStep = 0;
-        std::vector<std::pair<int, float>> recChord;   // notes played for the step in progress
-        int recHeldCount = 0;                           // how many are still physically held
-        int playStep = -1;
-        std::vector<std::pair<int, float>> sounding;    // notes currently sounding during playback
-        int sampleCounter = 0, gateCounter = -1;
+        SeqStep steps[kSteps];
+        int  length = kSteps;              // loop length, 1..16
+        bool mute = false;
+        int  engine = 0;                   // 0 auto (engine mode), 1 CS-80, 2 JP-8
+
+        // playback state (audio thread only)
+        int     playStep = -1;
+        int     gateCounter = -1;
+        SeqStep sounding;                  // what this track is holding now
+        int     soundModel = -1;           // forced model it was fired with
+    };
+
+    struct StepSeq
+    {
+        static constexpr int kTracks = 2;
+        static constexpr int kSteps = SeqTrack::kSteps;
+        SeqTrack tracks[kTracks];
+        int  recTrack = 0;                 // armed track (also the edit cursor's track)
+        int  recStep = 0;                  // record / edit cursor
+        SeqStep recChord;                  // notes played for the step in progress
+        int  recHeldCount = 0;             // how many are still physically held
+        int  sampleCounter = 0;
         bool fireNow = false;
     } seq;
     bool seqRec = false, seqPlay = false;
 
     // Called by the processor on the rising edge of the REC/PLAY toggles.
+    // REC does not wipe the track - the grid is visible and editable, so
+    // clearing is an explicit action; recording overwrites from the cursor.
     void seqRecStart()
     {
-        seq.steps.fill (SeqStep {});
-        seq.recStep = 0;
         seq.recChord.clear();
         seq.recHeldCount = 0;
         seqRec = true;
@@ -99,20 +153,51 @@ public:
 
     void seqPlayStart()
     {
-        seq.playStep = -1;
+        for (auto& t : seq.tracks) { t.playStep = -1; t.gateCounter = -1; }
         seq.sampleCounter = 0;
-        seq.gateCounter = -1;
         seq.fireNow = true;
         seqPlay = true;
     }
 
     void seqPlayStop()
     {
-        stopSeqStep (echoBase);
-        seq.playStep = -1;
-        seq.gateCounter = -1;
+        for (auto& t : seq.tracks) stopTrack (t, echoBase);
+        for (auto& t : seq.tracks) { t.playStep = -1; t.gateCounter = -1; }
         seq.fireNow = false;
         seqPlay = false;
+    }
+
+    // Message-thread edits from the grid. Safe against the audio thread for
+    // the reasons above; clearing count first keeps a torn read silent
+    // rather than wrong.
+    void seqClearStep (int track, int step)
+    {
+        if (auto* s = stepAt (track, step)) s->clear();
+    }
+    void seqSetStep (int track, int step, const SeqStep& src)
+    {
+        if (auto* s = stepAt (track, step)) { s->clear(); *s = src; }
+    }
+    void seqClearTrack (int track)
+    {
+        for (int i = 0; i < SeqTrack::kSteps; ++i) seqClearStep (track, i);
+    }
+    void seqCopyTrack (int from, int to)
+    {
+        if (from == to) return;
+        for (int i = 0; i < SeqTrack::kSteps; ++i)
+            if (auto* s = stepAt (from, i)) seqSetStep (to, i, *s);
+    }
+    void seqTransposeTrack (int track, int semis)
+    {
+        for (int i = 0; i < SeqTrack::kSteps; ++i)
+            if (auto* s = stepAt (track, i)) s->transpose (semis);
+    }
+    SeqStep* stepAt (int track, int step)
+    {
+        if (track < 0 || track >= StepSeq::kTracks
+            || step < 0 || step >= SeqTrack::kSteps) return nullptr;
+        return &seq.tracks[track].steps[step];
     }
 
     // Echoes the engine's *effective* note stream (post hold-latch, post
@@ -129,7 +214,7 @@ public:
         lfo.prepare (sampleRate);
         pwmLfo.prepare (sampleRate);
         for (int i = 0; i < kMaxVoices; ++i)
-            voices[i].prepare (sampleRate, i, &vp);
+            voices[(size_t) i].prepare (sampleRate, i, &vp);
         reset();
     }
 
@@ -144,8 +229,12 @@ public:
         arpSounding = -1;
         lfoEnvSeconds = 1000.f;
 
-        seq.playStep = -1; seq.sampleCounter = 0; seq.gateCounter = -1; seq.fireNow = false;
-        seq.sounding.clear();
+        seq.sampleCounter = 0; seq.fireNow = false;
+        for (auto& t : seq.tracks)
+        {
+            t.playStep = -1; t.gateCounter = -1;
+            t.sounding.clear(); t.soundModel = -1;
+        }
     }
 
     // ---------------- MIDI-facing API (called between render segments) ----
@@ -168,8 +257,8 @@ public:
             addArpNote (note, vel);
             return;
         }
-        if (seqPlay)
-            return;                              // sequencer playback owns the engine
+        // Live notes sound on top of a running sequence - playing over the
+        // pattern is the point of the sequencer.
         echo (note, vel, true, echoBase);
         triggerNote (note, vel);
     }
@@ -184,7 +273,6 @@ public:
         removeVal (latched, note);
 
         if (es.arpOn) { removeArpNote (note); return; }
-        if (seqPlay) return;
         echo (note, 0.f, false, echoBase);
         releaseNote (note);
     }
@@ -232,8 +320,8 @@ public:
         physicalHeld.clear(); latched.clear(); arpNotes.clear();
         monoStack[0].clear(); monoStack[1].clear();
         stopArpNote (echoBase);
-        stopSeqStep (echoBase);
-        seq.playStep = -1; seq.gateCounter = -1; seq.fireNow = false;
+        for (auto& t : seq.tracks) { stopTrack (t, echoBase); t.gateCounter = -1; }
+        seq.fireNow = false;
         for (auto& v : voices) v.release();
     }
 
@@ -335,11 +423,19 @@ private:
 
     // ---------------- Voice triggering ------------------------------------
     // A note may sound on one or both engines (modelsForNote); each engine
-    // dispatches through its own independent Poly/Mono/Legato/Unison mode.
-    void triggerNote (int note, float vel)
+    // dispatches through its own independent Poly/Mono/Legato/Unison/Stack
+    // mode. forceModel pins the note to one engine regardless of the engine
+    // mode - the sequencer uses it to give each track its own voice card.
+    int layersFor (int note, int* models, int forceModel) const
+    {
+        if (forceModel >= 0) { models[0] = forceModel; return 1; }
+        return modelsForNote (note, models);
+    }
+
+    void triggerNote (int note, float vel, int forceModel = -1)
     {
         int models[2];
-        const int layers = modelsForNote (note, models);
+        const int layers = layersFor (note, models, forceModel);
         const float gain = layers == 2 ? 0.72f : 1.f;
         for (int li = 0; li < layers; ++li)
             triggerForModel (note, vel, models[li], gain);
@@ -354,16 +450,17 @@ private:
             case Mode::mono:   triggerMonoModel   (note, vel, model, gain, true); break;
             case Mode::legato: triggerMonoModel   (note, vel, model, gain, monoStack[model].empty()); break;
             case Mode::unison: triggerUnisonModel (note, vel, model, gain, true); break;
+            case Mode::stack:  triggerStackModel  (note, vel, model, gain); break;
         }
-        if (cfg.mode != Mode::poly)
+        if (isMonoish (cfg.mode))
             addUnique (monoStack[model], note);
         lastTriggeredNote[model] = note;
     }
 
-    void releaseNote (int note)
+    void releaseNote (int note, int forceModel = -1)
     {
         int models[2];
-        const int layers = modelsForNote (note, models);
+        const int layers = layersFor (note, models, forceModel);
         for (int li = 0; li < layers; ++li)
             releaseForModel (note, models[li]);
     }
@@ -371,7 +468,7 @@ private:
     void releaseForModel (int note, int model)
     {
         auto& cfg = cfgFor (model);
-        if (cfg.mode == Mode::poly)
+        if (! isMonoish (cfg.mode))     // poly and stack: release every voice on the note
         {
             for (auto& v : voices)
                 if (v.currentNote() == note && v.currentModel() == model && v.isHeld())
@@ -478,12 +575,77 @@ private:
         }
     }
 
+    // ---- Stack: spread the whole voice pool over the notes being played.
+    // One note gets all 16 cards, two notes get 8 each, and so on - the
+    // Jupiter-8 unison trick, but polyphonic. Each card is detuned and
+    // panned across the stack, so a single note becomes a wall instead of
+    // one thin oscillator pair. As notes are added the existing stacks are
+    // *released* down to size rather than stolen, so thinning is a fade,
+    // not a click.
+    void triggerStackModel (int note, float vel, int model, float noteGain)
+    {
+        auto& cfg = cfgFor (model);
+        const int cap = std::min (cfg.polyVoices, kMaxVoices);
+        const int distinct = distinctHeldNotes (model, note) + 1;
+        const int per = std::clamp (cap / std::max (1, distinct), 1, kMaxStack);
+
+        shrinkStacks (model, per, note);
+
+        const float maxDet = cfg.unisonDetune * 50.f;
+        const float gain = noteGain / std::sqrt ((float) per);
+        const float glideFrom = glideSource (model, false);
+        for (int i = 0; i < per; ++i)
+        {
+            const float pos = per > 1 ? ((float) i / (float) (per - 1) - 0.5f) * 2.f : 0.f;
+            Voice* v = allocateVoice (model);
+            v->noteOn (note, vel, pos * maxDet, pos * 0.8f, glideFrom, true, gain, model);
+            if (sustainPedal) v->setSustained (true);
+        }
+    }
+
+    int distinctHeldNotes (int model, int exceptNote) const
+    {
+        int n = 0;
+        for (int i = 0; i < kMaxVoices; ++i)
+        {
+            const Voice& v = voices[(size_t) i];
+            if (! v.isHeld() || v.currentModel() != model) continue;
+            const int note = v.currentNote();
+            if (note == exceptNote) continue;
+            bool seen = false;
+            for (int j = 0; j < i && ! seen; ++j)
+                seen = voices[(size_t) j].isHeld()
+                    && voices[(size_t) j].currentModel() == model
+                    && voices[(size_t) j].currentNote() == note;
+            if (! seen) ++n;
+        }
+        return n;
+    }
+
+    void shrinkStacks (int model, int per, int exceptNote)
+    {
+        for (int i = 0; i < kMaxVoices; ++i)
+        {
+            Voice& v = voices[(size_t) i];
+            if (! v.isHeld() || v.currentModel() != model) continue;
+            const int note = v.currentNote();
+            if (note == exceptNote) continue;
+            int seen = 0;
+            for (int j = 0; j < i; ++j)
+                if (voices[(size_t) j].isHeld()
+                    && voices[(size_t) j].currentModel() == model
+                    && voices[(size_t) j].currentNote() == note) ++seen;
+            if (seen >= per) v.releaseNow();
+        }
+    }
+
     float glideSource (int model, bool voiceActive) const
     {
         const int last = lastTriggeredNote[model];
-        if (vp.glideMode == 2 && last >= 0)   // always
+        const int glideMode = vp.glide[model == modelJP8 ? 1 : 0].mode;
+        if (glideMode == 2 && last >= 0)   // always
             return (float) last;
-        if (vp.glideMode == 1)                // legato only
+        if (glideMode == 1)                // legato only
         {
             bool overlap = voiceActive || ! physicalHeld.empty() || ! monoStack[model].empty();
             if (overlap && last >= 0)
@@ -666,7 +828,7 @@ private:
             for (int li = 0; li < layers; ++li)
             {
                 const int model = models[li];
-                if (cfgFor (model).mode == Mode::poly)
+                if (! isMonoish (cfgFor (model).mode))
                     releaseForModel (arpSounding, model);
                 else
                 {
@@ -682,36 +844,43 @@ private:
     }
 
     // ---------------- Step sequencer: recording ----------------------------
+    // Step record: notes played land on the cursor step of the armed track;
+    // the cursor advances once every key of the chord is released, so you
+    // enter a pattern at your own pace. Recording stops at the track's loop
+    // length. The cursor is also the grid's edit position, so clicking a
+    // step in the UI moves where the next note lands.
     void seqRecNoteOn (int note, float vel)
     {
-        for (auto& p : seq.recChord) if (p.first == note) return;
-        seq.recChord.push_back ({ note, vel });
+        if (seq.recChord.has (note)) return;
+        seq.recChord.add (note, vel);
         ++seq.recHeldCount;
     }
 
     void seqRecNoteOff (int note)
     {
-        bool wasHeld = false;
-        for (auto& p : seq.recChord) if (p.first == note) { wasHeld = true; break; }
-        if (! wasHeld) return;
+        if (! seq.recChord.has (note)) return;
         --seq.recHeldCount;
-        if (seq.recHeldCount <= 0 && ! seq.recChord.empty())
+        if (seq.recHeldCount > 0 || seq.recChord.count == 0) return;
+
+        auto& track = seq.tracks[(size_t) std::clamp (seq.recTrack, 0, StepSeq::kTracks - 1)];
+        const int len = std::clamp (track.length, 1, SeqTrack::kSteps);
+        const int cursor = std::clamp (seq.recStep, 0, len - 1);
+        track.steps[(size_t) cursor].clear();
+        track.steps[(size_t) cursor] = seq.recChord;
+        seq.recChord.clear();
+        seq.recHeldCount = 0;
+        if (++seq.recStep >= len)
         {
-            seq.steps[(size_t) seq.recStep].notes = seq.recChord;
-            seq.recChord.clear();
-            seq.recHeldCount = 0;
-            if (++seq.recStep >= StepSeq::kSteps)
-            {
-                seq.recStep = 0;
-                seqRec = false;
-            }
+            seq.recStep = 0;
+            seqRec = false;         // one pass round the loop, then stop
         }
     }
 
     // ---------------- Step sequencer: playback ------------------------------
-    // Mirrors renderWithArp/advanceArpStep/stopArpNote, but always advances
-    // one step per tick (an empty step is a rest, not a pause) and fires
-    // every note in a step's chord simultaneously.
+    // Mirrors renderWithArp, but every track advances one step per tick (an
+    // empty step is a rest, not a pause), fires its whole chord at once, and
+    // holds its own gate - tracks with different lengths drift against each
+    // other on purpose.
     void renderWithSeq (float* left, float* right, int numSamples)
     {
         const int stepLen = arpStepLengthSamples();   // shares the arp's rate/div/sync
@@ -724,7 +893,8 @@ private:
                 seq.sampleCounter = 0;
                 advanceSeqStep (stepLen, renderBase + pos);
             }
-            if (seq.gateCounter == 0) { stopSeqStep (renderBase + pos); seq.gateCounter = -1; }
+            for (auto& t : seq.tracks)
+                if (t.gateCounter == 0) { stopTrack (t, renderBase + pos); t.gateCounter = -1; }
             if (seq.sampleCounter >= stepLen)
             {
                 seq.sampleCounter = 0;
@@ -732,37 +902,52 @@ private:
             }
 
             int chunk = std::min (numSamples - pos, std::max (1, stepLen - seq.sampleCounter));
-            if (seq.gateCounter > 0) chunk = std::min (chunk, seq.gateCounter);
+            for (auto& t : seq.tracks)
+                if (t.gateCounter > 0) chunk = std::min (chunk, t.gateCounter);
 
             renderVoices (left, right, pos, chunk);
             seq.sampleCounter += chunk;
-            if (seq.gateCounter > 0) seq.gateCounter -= chunk;
+            for (auto& t : seq.tracks)
+                if (t.gateCounter > 0) t.gateCounter -= chunk;
             pos += chunk;
         }
     }
 
     void advanceSeqStep (int stepLen, int sampleOffset)
     {
-        stopSeqStep (sampleOffset);
-        seq.playStep = (seq.playStep + 1) % StepSeq::kSteps;
-        auto& st = seq.steps[(size_t) seq.playStep];
-        for (auto& n : st.notes)
+        for (auto& t : seq.tracks)
         {
-            echo (n.first, n.second, true, sampleOffset);
-            triggerNote (n.first, n.second);
+            stopTrack (t, sampleOffset);
+            const int len = std::clamp (t.length, 1, SeqTrack::kSteps);
+            t.playStep = (t.playStep + 1) % len;
+            t.gateCounter = -1;
+            if (t.mute) continue;
+
+            const auto& st = t.steps[(size_t) t.playStep];
+            const int forced = t.engine == 1 ? modelCS80 : t.engine == 2 ? modelJP8 : -1;
+            const uint8_t n = std::min (st.count, (uint8_t) SeqStep::kMaxNotes);
+            for (uint8_t i = 0; i < n; ++i)
+            {
+                const float vel = (float) st.vel[i] / 127.f;
+                echo (st.note[i], vel, true, sampleOffset);
+                triggerNote (st.note[i], vel, forced);
+            }
+            t.sounding = st;
+            t.soundModel = forced;
+            if (n > 0)
+                t.gateCounter = std::max (16, (int) (es.arpGate * (float) stepLen));
         }
-        seq.sounding = st.notes;
-        seq.gateCounter = st.notes.empty() ? -1 : std::max (16, (int) (es.arpGate * (float) stepLen));
     }
 
-    void stopSeqStep (int sampleOffset)
+    void stopTrack (SeqTrack& t, int sampleOffset)
     {
-        for (auto& n : seq.sounding)
+        const uint8_t n = std::min (t.sounding.count, (uint8_t) SeqStep::kMaxNotes);
+        for (uint8_t i = 0; i < n; ++i)
         {
-            echo (n.first, 0.f, false, sampleOffset);
-            releaseNote (n.first);
+            echo (t.sounding.note[i], 0.f, false, sampleOffset);
+            releaseNote (t.sounding.note[i], t.soundModel);
         }
-        seq.sounding.clear();
+        t.sounding.clear();
     }
 
     void echo (int note, float vel, bool on, int offset)

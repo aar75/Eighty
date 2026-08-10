@@ -85,23 +85,37 @@ juce::String tipFor (const juce::String& id)
         { ID::touchToVib,   "Pressure adds vibrato (real aftertouch works too)" },
         { ID::touchToBright,"Pressure opens the filter" },
         { ID::touchToLevel, "Pressure raises the volume" },
-        { ID::csVoiceMode,   "CS-80: Poly plays chords; Mono retriggers; Legato doesn't; Unison stacks voices on one note" },
-        { ID::csPolyVoices,  "CS-80: maximum simultaneous voices" },
+        { ID::csVoiceMode,   "CS-80: Poly plays chords; Mono retriggers; Legato doesn't; Unison stacks a fixed "
+                             "number of voices on one note; Stack spreads the whole voice pool over whatever "
+                             "you hold (16 cards on one note, 8 each on two...)" },
+        { ID::csPolyVoices,  "CS-80: maximum simultaneous voices (also the size of the pool Stack divides up)" },
         { ID::csUnisonCount, "CS-80: voices stacked per note in Unison mode" },
-        { ID::csUnisonDetune,"CS-80: detune spread across the unison stack" },
-        { ID::jpVoiceMode,   "JP-8: Poly plays chords; Mono retriggers; Legato doesn't; Unison stacks voices on one note" },
-        { ID::jpPolyVoices,  "JP-8: maximum simultaneous voices" },
+        { ID::csUnisonDetune,"CS-80: detune spread across the unison / stack voices" },
+        { ID::jpVoiceMode,   "JP-8: Poly plays chords; Mono retriggers; Legato doesn't; Unison stacks a fixed "
+                             "number of voices on one note; Stack spreads the whole voice pool over whatever "
+                             "you hold (16 cards on one note, 8 each on two...)" },
+        { ID::jpPolyVoices,  "JP-8: maximum simultaneous voices (also the size of the pool Stack divides up)" },
         { ID::jpUnisonCount, "JP-8: voices stacked per note in Unison mode" },
-        { ID::jpUnisonDetune,"JP-8: detune spread across the unison stack" },
+        { ID::jpUnisonDetune,"JP-8: detune spread across the unison / stack voices" },
         { ID::stereoSpread,"Voice panning width: odd/even voice cards go left/right" },
         { ID::drift,       "Analog inconsistency: per-voice tuning, cutoff, envelope and pan tolerances" },
-        { ID::glideTime,   "Portamento time between notes" },
-        { ID::glideMode,   "Glide off, only on overlapping notes, or always" },
+        { ID::csGlideTime, "CS-80 portamento time between notes" },
+        { ID::csGlideMode, "CS-80 glide: off, only on overlapping notes, or always" },
+        { ID::jpGlideTime, "JP-8 portamento time between notes" },
+        { ID::jpGlideMode, "JP-8 glide: off, only on overlapping notes, or always" },
         { ID::bendRange,   "Pitch wheel range, in semitones" },
         { ID::hold,        "Latch notes after release (shortcut: B). A new chord replaces the held one" },
         { ID::arpOn,     "Enable the arpeggiator (shortcut: N)" },
-        { ID::seqRec,    "Record a 16-step pattern: play notes or chords, each releases into the next step" },
-        { ID::seqPlay,   "Play/stop the recorded step pattern - takes over from the live keyboard while running" },
+        { ID::seqRec,    "Step record into the armed track from the cursor: play a note or chord, and the "
+                         "cursor moves on when you let go. Stops after one lap of the loop" },
+        { ID::seqPlay,   "Run both sequencer tracks. You can keep playing live on top of them" },
+        { ID::seqTrack,  "Which track REC writes to, and which the CLEAR / COPY buttons act on" },
+        { ID::seqAMute,  "Silence track A (it keeps running, so it stays in sync)" },
+        { ID::seqBMute,  "Silence track B (it keeps running, so it stays in sync)" },
+        { ID::seqAEng,   "Which voice card track A plays. Auto follows the engine mode / key map" },
+        { ID::seqBEng,   "Which voice card track B plays. Auto follows the engine mode / key map" },
+        { ID::seqALen,   "Loop length of track A. Different lengths per track give polymeter" },
+        { ID::seqBLen,   "Loop length of track B. Different lengths per track give polymeter" },
         { ID::arpMode,   "Note order. 'PLY' plays your held notes in order, like a step sequencer" },
         { ID::arpSync,   "Sync the rate to the host tempo" },
         { ID::arpRateHz, "Free-running rate, used when Sync is off" },
@@ -125,6 +139,8 @@ juce::String tipFor (const juce::String& id)
         { ID::masterTune, "Global tune, in cents" },
         { ID::limitDrive, "Output limiter: pushes the signal into a ceiling just under 0 dB. "
                           "At 0 it is a transparent safety; turn up for loudness and squash" },
+        { ID::stereoWidth,"Stereo width of the output: 0 collapses to mono, 1 is neutral, 2 is double-wide. "
+                          "Watch the vector display in the header" },
         { ID::engineMode, "What sounds: one engine everywhere, Split by key, Layer both on every note, "
                           "or Keys: paint each key's engine on the strip above the keyboard" },
         { ID::splitPoint, "Split key: notes below and above route to different engines (Split mode)" },
@@ -181,7 +197,7 @@ juce::String shortValueText (const juce::String& id, double val)
 
     if (in ({ ID::fEnvA, ID::fEnvD, ID::fEnvR, ID::aEnvA, ID::aEnvD, ID::aEnvR,
               ID::jpFEnvA, ID::jpFEnvD, ID::jpFEnvR, ID::jpAEnvA, ID::jpAEnvD, ID::jpAEnvR,
-              ID::lfoDelay, ID::touchRise, ID::glideTime, ID::delayTime }))
+              ID::lfoDelay, ID::touchRise, ID::csGlideTime, ID::jpGlideTime, ID::delayTime }))
     {
         if (v < 0.0995f) return juce::String ((int) std::round (v * 1000.f)) + "ms";
         if (v < 0.9995f) return juce::String ((int) std::round (v * 1000.f)) + "m";
@@ -206,8 +222,12 @@ juce::String shortValueText (const juce::String& id, double val)
     if (in ({ ID::filterEnvAmt, ID::jpEnvAmt }))
         return (v >= 0.005f ? "+" : "") + juce::String (v, 2);
 
-    if (in ({ ID::csPolyVoices, ID::csUnisonCount, ID::jpPolyVoices, ID::jpUnisonCount, ID::arpOctaves }))
+    if (in ({ ID::csPolyVoices, ID::csUnisonCount, ID::jpPolyVoices, ID::jpUnisonCount,
+              ID::arpOctaves, ID::seqALen, ID::seqBLen }))
         return juce::String ((int) std::round (v));
+
+    if (id == ID::stereoWidth)
+        return juce::String ((int) std::round (v * 100.f)) + "%";
 
     return juce::String (v, 2);
 }
@@ -378,6 +398,9 @@ MiniKnob::MiniKnob (const juce::String& text, bool headerStyle) : header (header
 void MiniKnob::resized()
 {
     const int kd = knobSize > 0 ? knobSize : getWidth() - 6;
+    // narrow slots get a smaller caption rather than an ellipsis
+    if (! header)
+        label.setFont (ui::sans (getWidth() >= 40 ? 10.f : (getWidth() >= 34 ? 9.f : 8.f), true));
     if (header)
     {
         slider.setBounds ((getWidth() - kd) / 2, 0, kd, kd);
@@ -412,7 +435,7 @@ void ChipStack::paint (juce::Graphics& g)
     {
         for (int i = 0; i < n; ++i)
         {
-            auto r = juce::Rectangle<int> (i * 55, 0, 56, getHeight()).toFloat().reduced (0.5f);
+            auto r = juce::Rectangle<int> (i * cellW, 0, cellW + 1, getHeight()).toFloat().reduced (0.5f);
             const bool on = i == selected;
             // JP-8 chip gets the JP accent when active
             auto fill = labels[i].contains ("JP") ? ui::jpAccent : onCol;
@@ -420,7 +443,7 @@ void ChipStack::paint (juce::Graphics& g)
             g.setColour (on ? fill : ui::track);
             g.drawRect (r, 1.f);
             g.setColour (on ? ui::cream : ui::dim);
-            g.setFont (ui::sans (10.f, true));
+            g.setFont (ui::sans (cellW < 40 ? 9.f : 10.f, true));
             g.drawText (labels[i], r, juce::Justification::centred);
         }
         return;
@@ -456,7 +479,7 @@ void ChipStack::mouseDown (const juce::MouseEvent& e)
     if (n == 0) return;
     int idx;
     if (horiz)
-        idx = juce::jlimit (0, n - 1, e.x / 55);
+        idx = juce::jlimit (0, n - 1, e.x / juce::jmax (1, cellW));
     else
     {
         const int ch = chipH();
@@ -668,38 +691,32 @@ void Section::resized()
 }
 
 // ================================================================== Scope
-ScopeComponent::ScopeComponent (ScopeFifo& f) : fifo (f)
+ScopeTap::ScopeTap (ScopeFifo& f) : fifo (f)
 {
-    history.resize (8192, 0.f);
-    display.resize (512, 0.f);
-    setInterceptsMouseClicks (false, false);
+    l.resize (kHistory, 0.f);
+    r.resize (kHistory, 0.f);
     startTimerHz (30);
 }
 
-void ScopeComponent::timerCallback()
+void ScopeTap::timerCallback()
 {
-    float temp[2048];
+    float tl[2048], tr[2048];
     int n;
-    while ((n = fifo.pull (temp, 2048)) > 0)
+    while ((n = fifo.pull (tl, tr, 2048)) > 0)
         for (int i = 0; i < n; ++i)
         {
-            history[(size_t) writePos] = temp[i];
-            writePos = (writePos + 1) & 8191;
+            l[(size_t) writePos] = tl[i];
+            r[(size_t) writePos] = tr[i];
+            writePos = (writePos + 1) & kMask;
         }
-    const int windowLen = 1400;
-    int start = (writePos - windowLen - 512) & 8191;
-    int trig = start;
-    for (int i = 0; i < 500; ++i)
-    {
-        int a = (start + i) & 8191, b = (start + i + 1) & 8191;
-        if (history[(size_t) a] <= 0.f && history[(size_t) b] > 0.f) { trig = b; break; }
-    }
-    for (size_t i = 0; i < display.size(); ++i)
-    {
-        int idx = (trig + (int) ((float) i * (float) windowLen / (float) display.size())) & 8191;
-        display[i] = history[(size_t) idx];
-    }
-    repaint();
+    for (auto* v : views)
+        if (v->isShowing()) v->repaint();
+}
+
+ScopeComponent::ScopeComponent (ScopeTap& t) : tap (t)
+{
+    setInterceptsMouseClicks (false, false);
+    tap.addView (this);
 }
 
 void ScopeComponent::paint (juce::Graphics& g)
@@ -714,18 +731,77 @@ void ScopeComponent::paint (juce::Graphics& g)
     g.setColour (ui::scopeLine);
     g.drawHorizontalLine ((int) area.getCentreY(), area.getX(), area.getRight());
 
+    // mono sum, rising-edge triggered so the trace stands still
+    const auto& buf = tap.lBuf();
+    const auto& bufR = tap.rBuf();
+    auto sample = [&] (int idx)
+    {
+        const int i = idx & ScopeTap::kMask;
+        return 0.5f * (buf[(size_t) i] + bufR[(size_t) i]);
+    };
+
+    constexpr int windowLen = 1400, points = 512;
+    const int start = tap.pos() - windowLen - 512;
+    int trig = start;
+    for (int i = 0; i < 500; ++i)
+        if (sample (start + i) <= 0.f && sample (start + i + 1) > 0.f) { trig = start + i + 1; break; }
+
     juce::Path p;
     const float midY = area.getCentreY();
     const float scaleY = area.getHeight() * 0.48f;
-    for (size_t i = 0; i < display.size(); ++i)
+    for (int i = 0; i < points; ++i)
     {
-        const float px = area.getX() + area.getWidth() * (float) i / (float) (display.size() - 1);
-        const float py = midY - juce::jlimit (-1.f, 1.f, display[i]) * scaleY;
+        const float px = area.getX() + area.getWidth() * (float) i / (float) (points - 1);
+        const float py = midY - juce::jlimit (-1.f, 1.f,
+                            sample (trig + i * windowLen / points)) * scaleY;
         if (i == 0) p.startNewSubPath (px, py);
         else        p.lineTo (px, py);
     }
     g.setColour (ui::scopeTrace);
     g.strokePath (p, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved));
+}
+
+// ============================================================== Lissajous
+LissajousScope::LissajousScope (ScopeTap& t) : tap (t)
+{
+    setInterceptsMouseClicks (false, false);
+    setTooltip ("Vector display: left against right, rotated so mono draws a vertical line. "
+                "A wide, round shape is a wide stereo image; a horizontal line is out of phase");
+    tap.addView (this);
+}
+
+void LissajousScope::paint (juce::Graphics& g)
+{
+    auto b = getLocalBounds().toFloat();
+    g.setColour (ui::scopeBg);
+    g.fillRoundedRectangle (b, 5.f);
+    g.setColour (ui::line);
+    g.drawRoundedRectangle (b.reduced (0.5f), 5.f, 1.f);
+
+    const auto c = b.getCentre();
+    const float rad = juce::jmin (b.getWidth(), b.getHeight()) * 0.5f - 5.f;
+
+    // graticule: the two 45-degree axes plus a bounding circle
+    g.setColour (ui::scopeLine);
+    g.drawEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f, 1.f);
+    g.drawLine (c.x, c.y - rad, c.x, c.y + rad, 1.f);
+    g.drawLine (c.x - rad, c.y, c.x + rad, c.y, 1.f);
+
+    // Mid/side rotation: y = L+R (mono energy, up), x = L-R (the difference).
+    // 1/sqrt(2) keeps a full-scale mono signal inside the circle.
+    constexpr int frames = 1200;
+    juce::Path p;
+    bool started = false;
+    for (int i = frames; i > 0; --i)
+    {
+        const float L = tap.left (i), R = tap.right (i);
+        const float x = c.x + juce::jlimit (-1.f, 1.f, (L - R) * 0.7071f) * rad;
+        const float y = c.y - juce::jlimit (-1.f, 1.f, (L + R) * 0.7071f) * rad;
+        if (! started) { p.startNewSubPath (x, y); started = true; }
+        else           p.lineTo (x, y);
+    }
+    g.setColour (ui::scopeTrace.withAlpha (0.75f));
+    g.strokePath (p, juce::PathStrokeType (1.f));
 }
 
 // ============================================================= PitchWheel
@@ -933,6 +1009,235 @@ void KeyZoneStrip::showFillMenu()
                 case 5: proc.fillKeyZones ([split] (int n) { return (uint8_t) (n < split ? 1 : 0); }); break;
                 case 6: proc.fillKeyZones ([] (int n) { return (uint8_t) ((n / 12) % 2); }); break;
                 case 7: proc.fillKeyZones ([] (int n) { return (uint8_t) (n % 2); }); break;
+                default: return;
+            }
+            repaint();
+        });
+}
+
+// ================================================================ SeqGrid
+namespace
+{
+    juce::String noteName (int n) { return juce::MidiMessage::getMidiNoteName (n, true, true, 3); }
+
+    juce::String chordText (const eighty::SynthEngine::SeqStep& st)
+    {
+        juce::String s;
+        for (uint8_t i = 0; i < st.count; ++i)
+        {
+            if (i > 0) s << " ";
+            s << noteName (st.note[i]);
+        }
+        return s;
+    }
+}
+
+SeqGrid::SeqGrid (EightyProcessor& p) : proc (p)
+{
+    setTooltip ("Step grid. Click a step to move the record/edit cursor there (and drop in any keys "
+                "you are holding). Drag up or down to transpose a step, double-click to clear it, "
+                "right-click for the step and track menu");
+}
+
+int SeqGrid::trackAt (juce::Point<int> pos) const
+{
+    if (pos.y < rulerH) return -1;
+    return pos.y < rulerH + rowH + rowGap / 2 ? 0 : 1;
+}
+
+int SeqGrid::stepAt (juce::Point<int> pos) const
+{
+    const int n = eighty::SynthEngine::SeqTrack::kSteps;
+    return juce::jlimit (0, n - 1, pos.x * n / juce::jmax (1, getWidth()));
+}
+
+juce::Rectangle<int> SeqGrid::cellBounds (int track, int step) const
+{
+    const int n = eighty::SynthEngine::SeqTrack::kSteps;
+    const int x0 = step * getWidth() / n;
+    const int x1 = (step + 1) * getWidth() / n;
+    const int y = rulerH + track * (rowH + rowGap);
+    return { x0, y, x1 - x0, rowH };
+}
+
+void SeqGrid::paint (juce::Graphics& g)
+{
+    auto& seq = proc.engine.seq;
+    const int nSteps = eighty::SynthEngine::SeqTrack::kSteps;
+    const bool playing = proc.engine.seqPlay;
+    const bool recording = proc.engine.seqRec;
+
+    g.setColour (ui::scopeBg);
+    g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.f);
+
+    // ruler: step numbers, bar accents every 4
+    g.setFont (ui::mono (8.5f));
+    for (int s = 0; s < nSteps; ++s)
+    {
+        auto c = cellBounds (0, s);
+        g.setColour (s % 4 == 0 ? ui::scopeTrace.withAlpha (0.75f) : ui::dim.withAlpha (0.6f));
+        g.drawText (juce::String (s + 1), c.getX(), 1, c.getWidth(), rulerH - 2,
+                    juce::Justification::centred);
+    }
+
+    for (int t = 0; t < eighty::SynthEngine::StepSeq::kTracks; ++t)
+    {
+        const auto& track = seq.tracks[(size_t) t];
+        const int len = juce::jlimit (1, nSteps, track.length);
+
+        for (int s = 0; s < nSteps; ++s)
+        {
+            auto cell = cellBounds (t, s).reduced (1);
+            const auto& st = track.steps[(size_t) s];
+            const bool beyond = s >= len;
+            const bool onPlayhead = playing && ! beyond && track.playStep == s;
+            const bool onCursor = seq.recTrack == t && seq.recStep == s;
+
+            // body
+            juce::Colour fill = beyond ? ui::scopeBg.brighter (0.02f)
+                              : st.count > 0 ? ui::scopeTrace.withAlpha (track.mute ? 0.16f : 0.34f)
+                                             : ui::scopeLine.withAlpha (0.5f);
+            if (onPlayhead)
+                fill = st.count > 0 ? ui::scopeTrace.withAlpha (track.mute ? 0.3f : 0.85f)
+                                    : ui::scopeLine.withAlpha (0.9f);
+            g.setColour (fill);
+            g.fillRoundedRectangle (cell.toFloat(), 2.f);
+
+            // bar-line accent every 4 steps
+            if (s % 4 == 0 && ! beyond)
+            {
+                g.setColour (ui::scopeTrace.withAlpha (0.25f));
+                g.fillRect (cell.getX(), cell.getY(), 2, cell.getHeight());
+            }
+
+            if (st.count > 0)
+            {
+                g.setColour (onPlayhead ? ui::scopeBg
+                                        : (beyond ? ui::dim.withAlpha (0.55f) : ui::cream));
+                g.setFont (ui::mono (st.count > 3 ? 8.f : 9.5f));
+                g.drawText (chordText (st), cell.reduced (3, 0),
+                            juce::Justification::centred, false);
+            }
+
+            if (onCursor)
+            {
+                g.setColour (recording ? ui::ledOn : ui::scopeTrace);
+                g.drawRoundedRectangle (cell.toFloat().reduced (0.5f), 2.f, 1.6f);
+            }
+        }
+
+        // loop-end marker, so a shortened track reads at a glance
+        if (len < nSteps)
+        {
+            auto last = cellBounds (t, len - 1);
+            g.setColour (ui::ledOn.withAlpha (0.9f));
+            g.fillRect (last.getRight() - 1, last.getY(), 2, last.getHeight());
+        }
+
+    }
+}
+
+void SeqGrid::setCursor (int track, int step)
+{
+    if (auto* p = proc.apvts.getParameter (ID::seqTrack))
+    {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) track));
+        p->endChangeGesture();
+    }
+    proc.engine.seq.recTrack = track;
+    proc.engine.seq.recStep = step;
+    repaint();
+}
+
+void SeqGrid::mouseDown (const juce::MouseEvent& e)
+{
+    const int t = trackAt (e.getPosition());
+    if (t < 0) return;
+    const int s = stepAt (e.getPosition());
+
+    if (e.mods.isPopupMenu()) { showStepMenu (t, s); return; }
+
+    setCursor (t, s);
+    dragTrack = t; dragStep = s; dragStartY = e.y; dragApplied = 0;
+
+    // drop whatever is being held into the step - the fastest way to build
+    // a pattern without arming REC
+    auto* st = proc.engine.stepAt (t, s);
+    if (st == nullptr) return;
+    eighty::SynthEngine::SeqStep fresh;
+    for (int n = 0; n < 128; ++n)
+        if (const int v = proc.heldNoteVel[(size_t) n].load (std::memory_order_relaxed))
+            fresh.add (n, (float) v / 127.f);
+    if (fresh.count > 0)
+    {
+        proc.engine.seqSetStep (t, s, fresh);
+        say ("SEQ " + juce::String (t == 0 ? "A" : "B") + " STEP " + juce::String (s + 1)
+             + " . " + chordText (fresh));
+        repaint();
+    }
+    else
+        say ("SEQ CURSOR . TRACK " + juce::String (t == 0 ? "A" : "B")
+             + " STEP " + juce::String (s + 1));
+}
+
+void SeqGrid::mouseDrag (const juce::MouseEvent& e)
+{
+    if (dragTrack < 0) return;
+    auto* st = proc.engine.stepAt (dragTrack, dragStep);
+    if (st == nullptr || st->count == 0) return;
+
+    const int wanted = (dragStartY - e.y) / 6;      // 6 px per semitone
+    const int delta = wanted - dragApplied;
+    if (delta == 0) return;
+    st->transpose (delta);
+    dragApplied = wanted;
+    say ("SEQ STEP " + juce::String (dragStep + 1) + " . " + chordText (*st));
+    repaint();
+}
+
+void SeqGrid::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    const int t = trackAt (e.getPosition());
+    if (t < 0) return;
+    const int s = stepAt (e.getPosition());
+    proc.engine.seqClearStep (t, s);
+    say ("SEQ STEP " + juce::String (s + 1) + " CLEARED");
+    repaint();
+}
+
+void SeqGrid::showStepMenu (int track, int step)
+{
+    const juce::String tn (track == 0 ? "A" : "B");
+    juce::PopupMenu m;
+    m.addSectionHeader ("Track " + tn + ", step " + juce::String (step + 1));
+    m.addItem (1, "Clear step");
+    m.addItem (2, "Set loop length to " + juce::String (step + 1) + " steps");
+    m.addSeparator();
+    m.addItem (3, "Clear track " + tn);
+    m.addItem (4, "Copy track " + tn + " to " + (track == 0 ? "B" : "A"));
+    m.addItem (5, "Transpose track " + tn + " up an octave");
+    m.addItem (6, "Transpose track " + tn + " down an octave");
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+        [this, track, step] (int result)
+        {
+            auto& engine = proc.engine;
+            switch (result)
+            {
+                case 1: engine.seqClearStep (track, step); break;
+                case 2:
+                    if (auto* p = proc.apvts.getParameter (track == 0 ? ID::seqALen : ID::seqBLen))
+                    {
+                        p->beginChangeGesture();
+                        p->setValueNotifyingHost (p->convertTo0to1 ((float) (step + 1)));
+                        p->endChangeGesture();
+                    }
+                    break;
+                case 3: engine.seqClearTrack (track); break;
+                case 4: engine.seqCopyTrack (track, 1 - track); break;
+                case 5: engine.seqTransposeTrack (track, 12); break;
+                case 6: engine.seqTransposeTrack (track, -12); break;
                 default: return;
             }
             repaint();
@@ -1170,8 +1475,11 @@ void InsertPanel::closeWindowFor (juce::AudioPluginInstance* inst)
 // ================================================================= Editor
 EightyEditor::EightyEditor (EightyProcessor& p)
     : AudioProcessorEditor (p), proc (p),
-      scope (p.scopeFifo),
+      scopeTap (p.scopeFifo),
+      scope (scopeTap),
+      lissajous (scopeTap),
       insertPanel (p, [this] (const juce::String& id) { paramTouched (id); }),
+      seqGrid (p),
       keyboard (p.keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard)
 {
     setLookAndFeel (&lnf);
@@ -1206,8 +1514,8 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     addAndMakeVisible (statusLabel);
 
     hintLabel.setText ("PLAY: A W S E D F T G Y H U J K O L P ;    Z/X OCTAVE    C/V VELOCITY    "
-                       "B HOLD    N ARP    LEFT/RIGHT SELECT    UP/DOWN ADJUST    "
-                       "SHIFT+UP/DOWN BEND    RIGHT-CLICK: MIDI LEARN",
+                       "B HOLD    N ARP    M SEQ PLAY    R SEQ REC    LEFT/RIGHT SELECT    "
+                       "UP/DOWN ADJUST (HOLD TO SWEEP)    SHIFT+UP/DOWN BEND    RIGHT-CLICK: MIDI LEARN",
                        juce::dontSendNotification);
     hintLabel.setFont (ui::mono (9.5f));
     hintLabel.setColour (juce::Label::textColourId, ui::dim);
@@ -1250,6 +1558,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     volKnob   = makeHeaderKnob (ID::masterVol, "VOLUME");
     tuneKnob  = makeHeaderKnob (ID::masterTune, "TUNE");
     limitKnob = makeHeaderKnob (ID::limitDrive, "LIMIT");
+    widthKnob = makeHeaderKnob (ID::stereoWidth, "WIDTH");
 
     // ---- CS-80 engine row
     makeLed   (secOsc1, ID::osc1On, "ON");
@@ -1363,53 +1672,58 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeFader (secTouch, ID::touchToLevel, "LEVEL", 26);
     addAndMakeVisible (secTouch);
 
-    makeChips (secVoiceCS, ID::csVoiceMode, { "POLY", "MONO", "LEG", "UNI" }, "MODE", 44);
-    makeKnob  (secVoiceCS, ID::csPolyVoices, "VOICES", 36);
-    makeKnob  (secVoiceCS, ID::csUnisonCount, "UNI CNT", 36);
-    makeKnob  (secVoiceCS, ID::csUnisonDetune, "DETUNE", 36);
+    // Each engine carries its own voice mode *and* its own portamento, so a
+    // JP-8 lead can slide over a CS-80 pad that doesn't.
+    makeChips (secVoiceCS, ID::csVoiceMode, { "POLY", "MONO", "LEG", "UNI", "STK" }, "MODE", 44);
+    makeKnob  (secVoiceCS, ID::csPolyVoices, "VOICES", 33);
+    makeKnob  (secVoiceCS, ID::csUnisonCount, "UNI CNT", 33);
+    makeKnob  (secVoiceCS, ID::csUnisonDetune, "DETUNE", 33);
+    makeChips (secVoiceCS, ID::csGlideMode, { "OFF", "LEG", "ALW" }, "GLIDE", 38);
+    makeKnob  (secVoiceCS, ID::csGlideTime, "TIME", 33);
     addAndMakeVisible (secVoiceCS);
 
-    makeChips (secVoiceJP, ID::jpVoiceMode, { "POLY", "MONO", "LEG", "UNI" }, "MODE", 44);
-    makeKnob  (secVoiceJP, ID::jpPolyVoices, "VOICES", 36);
-    makeKnob  (secVoiceJP, ID::jpUnisonCount, "UNI CNT", 36);
-    makeKnob  (secVoiceJP, ID::jpUnisonDetune, "DETUNE", 36);
+    makeChips (secVoiceJP, ID::jpVoiceMode, { "POLY", "MONO", "LEG", "UNI", "STK" }, "MODE", 44);
+    makeKnob  (secVoiceJP, ID::jpPolyVoices, "VOICES", 33);
+    makeKnob  (secVoiceJP, ID::jpUnisonCount, "UNI CNT", 33);
+    makeKnob  (secVoiceJP, ID::jpUnisonDetune, "DETUNE", 33);
+    makeChips (secVoiceJP, ID::jpGlideMode, { "OFF", "LEG", "ALW" }, "GLIDE", 38);
+    makeKnob  (secVoiceJP, ID::jpGlideTime, "TIME", 33);
     addAndMakeVisible (secVoiceJP);
 
-    makeChips (secGlide, ID::glideMode, { "OFF", "LEG", "ALW" }, "GLIDE", 44);
-    makeKnob  (secGlide, ID::stereoSpread, "SPREAD", 36);
-    makeKnob  (secGlide, ID::drift, "DRIFT", 36);
-    makeKnob  (secGlide, ID::glideTime, "GLIDE", 36);
-    makeKnob  (secGlide, ID::bendRange, "BEND", 36);
+    makeKnob  (secGlide, ID::stereoSpread, "SPREAD", 33);
+    makeKnob  (secGlide, ID::drift, "DRIFT", 33);
+    makeKnob  (secGlide, ID::bendRange, "BEND", 33);
     addAndMakeVisible (secGlide);
 
     makeLed   (secArp, ID::arpOn, "ON");
-    makeLed   (secArp, ID::seqRec, "REC");
-    makeLed   (secArp, ID::seqPlay, "PLAY");
     makeLed   (secArp, ID::hold, "HOLD");
     makeLed   (secArp, ID::arpSync, "SYNC");
     makeChips (secArp, ID::arpMode, { "UP", "DN", "UD", "RND", "PLY" }, "MODE", 44);
     makeChips (secArp, ID::arpDiv, { "1/1", "1/2", "1/4", "1/8", "8T", "1/16", "16T", "1/32" }, "DIV", 44);
-    makeKnob  (secArp, ID::arpRateHz, "RATE", 36);
-    makeKnob  (secArp, ID::arpOctaves, "OCT", 36);
-    makeKnob  (secArp, ID::arpGate, "GATE", 36);
+    makeKnob  (secArp, ID::arpRateHz, "RATE", 33);
+    makeKnob  (secArp, ID::arpOctaves, "OCT", 33);
+    makeKnob  (secArp, ID::arpGate, "GATE", 33);
     addAndMakeVisible (secArp);
 
     makeLed  (secFx, ID::chorusOn, "CHORUS");
     makeLed  (secFx, ID::delayOn, "DELAY");
     makeLed  (secFx, ID::tremOn, "TREM");
     makeLed  (secFx, ID::delaySync, "D.SYNC");
-    makeKnob (secFx, ID::chorusRate, "C.RATE", 36);
-    makeKnob (secFx, ID::chorusDepth, "C.DEP", 36);
-    makeKnob (secFx, ID::chorusMix, "C.MIX", 36);
-    makeKnob (secFx, ID::delayTime, "D.TIME", 36);
-    makeKnob (secFx, ID::delayDiv, "D.DIV", 36);
-    makeKnob (secFx, ID::delayFB, "D.FB", 36);
-    makeKnob (secFx, ID::delayMix, "D.MIX", 36);
-    makeKnob (secFx, ID::tremRate, "T.RATE", 36);
-    makeKnob (secFx, ID::tremDepth, "T.DEP", 36);
+    makeKnob (secFx, ID::chorusRate, "C.RATE", 33);
+    makeKnob (secFx, ID::chorusDepth, "C.DEP", 33);
+    makeKnob (secFx, ID::chorusMix, "C.MIX", 33);
+    makeKnob (secFx, ID::delayTime, "D.TIME", 33);
+    makeKnob (secFx, ID::delayDiv, "D.DIV", 33);
+    makeKnob (secFx, ID::delayFB, "D.FB", 33);
+    makeKnob (secFx, ID::delayMix, "D.MIX", 33);
+    makeKnob (secFx, ID::tremRate, "T.RATE", 33);
+    makeKnob (secFx, ID::tremDepth, "T.DEP", 33);
     addAndMakeVisible (secFx);
 
+    buildSeqRow();
+
     addAndMakeVisible (scope);
+    addAndMakeVisible (lissajous);
 
     wheel.onChange = [this] (float v, bool active)
     {
@@ -1443,7 +1757,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     setWantsKeyboardFocus (true);
     addKeyListener (this);
     startTimerHz (30);
-    setSize (1720, 596);
+    setSize (ui::windowW, ui::windowH);
 }
 
 EightyEditor::~EightyEditor()
@@ -1563,6 +1877,86 @@ LedToggle* EightyEditor::makeLed (Section& s, const juce::String& paramID, const
     return t;
 }
 
+LedToggle* EightyEditor::makeLooseLed (const juce::String& paramID, const juce::String& label)
+{
+    auto* param = proc.apvts.getParameter (paramID);
+    jassert (param != nullptr);
+    auto* t = new LedToggle (*param, label);
+    owned.add (t);
+    t->setTooltip (tipFor (paramID));
+    t->onUserChange = [this, paramID] { paramTouched (paramID); };
+    t->onRightClick = [this, paramID] (juce::Point<int> pos) { showLearnMenu (paramID, pos); };
+    controls.push_back ({ t, paramID });
+    t->addMouseListener (this, true);
+    addAndMakeVisible (t);
+    return t;
+}
+
+ChipStack* EightyEditor::makeLooseChips (const juce::String& paramID, juce::StringArray labels,
+                                         const juce::String& group, int cellW)
+{
+    auto* param = proc.apvts.getParameter (paramID);
+    jassert (param != nullptr);
+    auto* c = new ChipStack (*param, std::move (labels), group, true);
+    c->cellW = cellW;
+    owned.add (c);
+    c->setTooltip (tipFor (paramID));
+    c->onUserChange = [this, paramID] { paramTouched (paramID); };
+    c->onRightClick = [this, paramID] (juce::Point<int> pos) { showLearnMenu (paramID, pos); };
+    controls.push_back ({ c, paramID });
+    c->addMouseListener (this, true);
+    addAndMakeVisible (c);
+    return c;
+}
+
+// ---- sequencer row: transport, per-track strip and the step grid
+void EightyEditor::buildSeqRow()
+{
+    seqRecLed  = makeLooseLed (ID::seqRec, "REC");
+    seqPlayLed = makeLooseLed (ID::seqPlay, "PLAY");
+    seqTrackChips = makeLooseChips (ID::seqTrack, { "A", "B" }, {}, 26);
+
+    seqMuteLed[0] = makeLooseLed (ID::seqAMute, "MUTE");
+    seqMuteLed[1] = makeLooseLed (ID::seqBMute, "MUTE");
+    seqEngChips[0] = makeLooseChips (ID::seqAEng, { "AUTO", "CS", "JP" }, {}, 34);
+    seqEngChips[1] = makeLooseChips (ID::seqBEng, { "AUTO", "CS", "JP" }, {}, 34);
+
+    // CLEAR / COPY act on the armed track, so they follow the A|B chips
+    auto armedTrack = [this]
+    { return (int) proc.apvts.getRawParameterValue (ID::seqTrack)->load(); };
+
+    seqClearBtn.setWantsKeyboardFocus (false);
+    seqClearBtn.setTooltip ("Erase every step of the armed track");
+    seqClearBtn.onClick = [this, armedTrack]
+    {
+        const int t = armedTrack();
+        proc.engine.seqClearTrack (t);
+        readoutText = "SEQ TRACK " + juce::String (t == 0 ? "A" : "B") + " CLEARED";
+        readoutUntil = juce::Time::getMillisecondCounter() + 2500;
+        seqGrid.repaint();
+    };
+    addAndMakeVisible (seqClearBtn);
+
+    seqCopyBtn.setWantsKeyboardFocus (false);
+    seqCopyBtn.setTooltip ("Copy the armed track's pattern onto the other track");
+    seqCopyBtn.onClick = [this, armedTrack]
+    {
+        const int t = armedTrack();
+        proc.engine.seqCopyTrack (t, 1 - t);
+        readoutText = juce::String ("SEQ ") + (t == 0 ? "A > B" : "B > A");
+        readoutUntil = juce::Time::getMillisecondCounter() + 2500;
+        seqGrid.repaint();
+    };
+    addAndMakeVisible (seqCopyBtn);
+
+    seqGrid.onMessage = [this] (const juce::String& s)
+    {
+        readoutText = s;
+        readoutUntil = juce::Time::getMillisecondCounter() + 2500;
+    };
+    addAndMakeVisible (seqGrid);
+}
+
 MiniDisplay* EightyEditor::makeDisplay (Section& s, MiniDisplay::Kind kind,
                                         std::initializer_list<const char*> paramIDs, int width)
 {
@@ -1656,7 +2050,10 @@ void EightyEditor::moveSelection (int dir)
     }
 }
 
-void EightyEditor::adjustSelected (int dir)
+// amount is in normalised units, signed. Stepped parameters (choices,
+// integer counts) snap to their own grid and carry the remainder over, so
+// a slow ramp still lands on every value in turn.
+void EightyEditor::adjustSelected (float amount)
 {
     if (selectedCtl < 0 || selectedCtl >= (int) controls.size()) return;
     const auto& pid = controls[(size_t) selectedCtl].paramID;
@@ -1664,12 +2061,60 @@ void EightyEditor::adjustSelected (int dir)
     if (p == nullptr) return;
 
     const int steps = p->getNumSteps();
-    const float delta = (steps > 1 && steps <= 128) ? 1.f / (float) (steps - 1) : 0.02f;
-    const float nv = juce::jlimit (0.f, 1.f, p->getValue() + (float) dir * delta);
-    p->beginChangeGesture();
+    const bool stepped = steps > 1 && steps <= 128;
+    float delta = amount;
+    if (stepped)
+    {
+        const float grid = 1.f / (float) (steps - 1);
+        adjustCarry += amount;
+        const float n = std::trunc (adjustCarry / grid);
+        if (std::abs (n) < 0.5f) return;             // not a whole step yet
+        adjustCarry -= n * grid;
+        delta = n * grid;
+    }
+
+    const float nv = juce::jlimit (0.f, 1.f, p->getValue() + delta);
+    if (std::abs (nv - p->getValue()) < 1.0e-6f) return;
     p->setValueNotifyingHost (nv);
-    p->endChangeGesture();
     paramTouched (pid);
+}
+
+// Called from the 30 Hz timer while an arrow key is held. The step size
+// ramps up the longer the key is down, so a tap nudges and a hold sweeps -
+// and because the voices smooth their parameters at control rate, the
+// sweep comes out as a glide, not a staircase.
+void EightyEditor::tickAdjustRamp()
+{
+    const bool shift = juce::ModifierKeys::currentModifiers.isShiftDown();
+    const bool up   = ! shift && juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::upKey);
+    const bool down = ! shift && juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::downKey);
+    const int dir = up && ! down ? 1 : (down && ! up ? -1 : 0);
+
+    auto endGesture = [this]
+    {
+        if (adjustParam != nullptr) adjustParam->endChangeGesture();
+        adjustParam = nullptr;
+        adjustDir = 0;
+        adjustHeld = 0.f;
+        adjustCarry = 0.f;
+    };
+
+    if (dir == 0) { endGesture(); return; }
+
+    if (dir != adjustDir)
+    {
+        endGesture();
+        adjustDir = dir;
+        if (selectedCtl >= 0 && selectedCtl < (int) controls.size())
+            adjustParam = proc.apvts.getParameter (controls[(size_t) selectedCtl].paramID);
+        if (adjustParam != nullptr) adjustParam->beginChangeGesture();
+    }
+
+    constexpr float dt = 1.f / 30.f;
+    adjustHeld += dt;
+    // 0.6 %/frame at first, accelerating to 3 %/frame after ~1.5 s held
+    const float rate = 0.006f + 0.024f * juce::jmin (1.f, adjustHeld / 1.5f);
+    adjustSelected ((float) dir * rate);
 }
 
 void EightyEditor::mouseDown (const juce::MouseEvent& e)
@@ -1724,16 +2169,42 @@ void EightyEditor::paint (juce::Graphics& g)
     // engine row: 3px top border in the engine colour over a tinted wash
     const auto ec = jpView ? ui::jpAccent : ui::stOsc;
     g.setColour (ec.withAlpha (jpView ? 0.12f : 0.06f));
-    g.fillRect (0, 88, getWidth(), 180);
+    g.fillRect (0, ui::engineY, getWidth(), ui::engineH);
     g.setColour (ec);
-    g.fillRect (0, 88, getWidth(), 3);
+    g.fillRect (0, ui::engineY, getWidth(), 3);
 
     // shared row: hairline top border
     g.setColour (ui::line);
-    g.fillRect (0, 268, getWidth(), 1);
+    g.fillRect (0, ui::sharedY, getWidth(), 1);
+
+    // sequencer row: its own faint wash so the grid reads as one block
+    g.setColour (ui::stLfo.withAlpha (0.05f));
+    g.fillRect (0, ui::seqY, getWidth(), ui::seqH);
+    g.setColour (ui::line);
+    g.fillRect (0, ui::seqY, getWidth(), 1);
 
     // footer top border
-    g.fillRect (0, 448, getWidth(), 1);
+    g.fillRect (0, ui::footerY, getWidth(), 1);
+
+    // sequencer row heading + stripe, in the Section idiom
+    {
+        auto f = ui::sans (11.f, true);
+        f.setExtraKerningFactor (0.05f);
+        g.setColour (ui::ink);
+        g.setFont (f);
+        g.drawText ("SEQUENCER", 14, ui::seqY + 7, 200, 12, juce::Justification::centredLeft);
+        g.setColour (ui::stLfo);
+        g.fillRect (14, ui::seqY + 21, 26, 3);
+
+        g.setColour (ui::dim);
+        g.setFont (ui::sans (8.5f, true));
+        g.drawText ("ARM", 14, ui::seqY + 52, 30, 12, juce::Justification::centredLeft);
+        // one caption per grid row, aligned with that track's controls
+        const int row0 = ui::seqY + 10 + SeqGrid::rulerH;
+        const int row1 = row0 + SeqGrid::rowH + SeqGrid::rowGap;
+        g.drawText ("TRACK A", 212, row0 + 1, 70, 10, juce::Justification::centredLeft);
+        g.drawText ("TRACK B", 212, row1 + 1, 70, 10, juce::Justification::centredLeft);
+    }
 
     // LCD readout background
     g.setColour (ui::scopeBg);
@@ -1758,8 +2229,8 @@ void EightyEditor::layoutRows()
         }
     };
 
-    const juce::Rectangle<int> engineArea (14, 91, getWidth() - 28, 177);
-    const juce::Rectangle<int> sharedArea (14, 269, getWidth() - 28, 179);
+    const juce::Rectangle<int> engineArea (14, ui::engineY + 3, getWidth() - 28, ui::engineH - 3);
+    const juce::Rectangle<int> sharedArea (14, ui::sharedY + 1, getWidth() - 28, ui::sharedH - 1);
 
     if (jpView)
         placeRow ({ &secVco1, &secVco2, &secJpMix, &secJpFilter, &secJpFEnv, &secJpAEnv },
@@ -1779,7 +2250,7 @@ void EightyEditor::layoutRows()
 
 void EightyEditor::resized()
 {
-    // ---- header (56px)
+    // ---- header
     titleLabel.setBounds (16, 8, 150, 24);
     subLabel.setBounds (16, 33, 170, 10);
 
@@ -1793,18 +2264,49 @@ void EightyEditor::resized()
     volKnob->setBounds (hx, 3, 44, 51);     hx += 58;
     tuneKnob->setBounds (hx, 3, 44, 51);    hx += 58;
     limitKnob->setBounds (hx, 3, 44, 51);   hx += 58;
+    widthKnob->setBounds (hx, 3, 44, 51);   hx += 58;
 
-    scope.setBounds (hx + 6, 7, getWidth() - 16 - (hx + 6), 42);
+    // The vector display is square and spans the header *and* the tab band,
+    // so it is big enough to actually read; the LCD shifts left to clear it.
+    const int lissSize = 74;
+    const int lissX = getWidth() - 16 - lissSize;
+    lissajous.setBounds (lissX, 7, lissSize, lissSize);
 
-    // ---- tab band (32px)
-    panelChips.setBounds (16, 62, PanelChips::totalW, 26);
+    const int scopeX = hx + 6;
+    scope.setBounds (scopeX, 7, lissX - 8 - scopeX, 42);
+
+    // ---- tab band
+    panelChips.setBounds (16, ui::tabY + 6, PanelChips::totalW, 26);
     const int lcdW = 480;
-    statusLabel.setBounds (getWidth() - 16 - lcdW + 14, 62, lcdW - 28, 22);
+    statusLabel.setBounds (lissX - 10 - lcdW + 14, ui::tabY + 6, lcdW - 28, 22);
 
     layoutRows();
 
+    // ---- sequencer row: transport block, per-track strip, then the grid
+    {
+        const int sy = ui::seqY;
+        seqRecLed->setBounds (14, sy + 30, seqRecLed->preferredWidth() + 4, 14);
+        seqPlayLed->setBounds (74, sy + 30, seqPlayLed->preferredWidth() + 4, 14);
+        seqTrackChips->setBounds (48, sy + 50, 2 * 26 + 1, 16);
+        seqClearBtn.setBounds (14, sy + 72, 52, 16);
+        seqCopyBtn.setBounds (72, sy + 72, 52, 16);
+
+        const int gridTop = sy + 10;
+        const int rowY[2] = { gridTop + SeqGrid::rulerH,
+                              gridTop + SeqGrid::rulerH + SeqGrid::rowH + SeqGrid::rowGap };
+        for (int t = 0; t < 2; ++t)
+        {
+            seqMuteLed[t]->setBounds (212, rowY[t] + 14, seqMuteLed[t]->preferredWidth() + 4, 14);
+            seqEngChips[t]->setBounds (272, rowY[t] + 13, 3 * 34 + 1, 16);
+        }
+
+        const int gridX = 386;
+        seqGrid.setBounds (gridX, gridTop, getWidth() - 14 - gridX, SeqGrid::preferredHeight());
+    }
+
     // ---- footer
-    const int fy = 456, fb = 574;
+    const int fy = ui::footerY + 8;
+    const int fb = ui::footerY + ui::footerH - 4;
     wheel.setBounds (14, fy, 44, fb - fy);
     const int insertW = 262;
     insertPanel.setBounds (getWidth() - 14 - insertW, fy, insertW, fb - fy);
@@ -1814,7 +2316,7 @@ void EightyEditor::resized()
     keyboard.setBounds (kbX, fy + 16, kbW, fb - (fy + 16));
     keyboard.setKeyWidth ((float) kbW / 36.f);
 
-    hintLabel.setBounds (0, 576, getWidth(), 20);
+    hintLabel.setBounds (0, ui::hintY, getWidth(), 20);
 
     updateHalo();
 }
@@ -1828,9 +2330,10 @@ bool EightyEditor::keyPressed (const juce::KeyPress& kp, juce::Component*)
     if (code == juce::KeyPress::rightKey) { moveSelection (1);  return true; }
     if (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey)
     {
-        if (kp.getModifiers().isShiftDown())
-            return true;
-        adjustSelected (code == juce::KeyPress::upKey ? 1 : -1);
+        // First press nudges straight away; holding hands over to the
+        // timer's ramp (tickAdjustRamp) so the value sweeps smoothly.
+        if (! kp.getModifiers().isShiftDown() && adjustDir == 0)
+            tickAdjustRamp();
         return true;
     }
     if (code == juce::KeyPress::escapeKey) { selectControl (-1); return true; }
@@ -1838,7 +2341,8 @@ bool EightyEditor::keyPressed (const juce::KeyPress& kp, juce::Component*)
     const auto c = (juce::juce_wchar) juce::CharacterFunctions::toLowerCase (
         (juce::juce_wchar) kp.getTextCharacter());
     if (juce::String (noteKeys).containsChar (c)) return true;
-    if (c == 'z' || c == 'x' || c == 'c' || c == 'v' || c == 'b' || c == 'n')
+    if (c == 'z' || c == 'x' || c == 'c' || c == 'v' || c == 'b' || c == 'n'
+        || c == 'm' || c == 'r')
         { handleActionKey (c); return true; }
     return false;
 }
@@ -1895,6 +2399,8 @@ void EightyEditor::handleActionKey (juce::juce_wchar c)
     else if (c == 'v') typeVelocity = juce::jmin (1.f, typeVelocity + 0.1f);
     else if (c == 'b') toggleParam (ID::hold);
     else if (c == 'n') toggleParam (ID::arpOn);
+    else if (c == 'm') toggleParam (ID::seqPlay);
+    else if (c == 'r') toggleParam (ID::seqRec);
 }
 
 void EightyEditor::timerCallback()
@@ -1916,6 +2422,11 @@ void EightyEditor::timerCallback()
     }
     if (zoneStrip != nullptr && zoneStrip->isVisible())
         zoneStrip->repaint();      // tracks keyboard scrolling and param changes
+
+    tickAdjustRamp();
+
+    if (proc.engine.seqPlay || proc.engine.seqRec)
+        seqGrid.repaint();         // playhead / cursor
 
     const bool shift = juce::ModifierKeys::currentModifiers.isShiftDown();
     const bool up   = shift && juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::upKey);

@@ -68,13 +68,44 @@ Built plugins are copied to `~/Library/Audio/Plug-Ins/{VST3,Components}`.
   switchable **12/24 dB/oct** (24 dB mode resonates harder, like the original).
 - Its own filter/amp ADSRs. Drift, touch, LFO, and FX apply to both engines.
 
+## Voice modes
+
+Each engine picks its own mode and its own portamento, so a JP-8 lead can
+glide over a CS-80 pad that doesn't:
+
+- **Poly / Mono / Legato** — as usual.
+- **Unison** — a fixed number of detuned voices per note.
+- **Stack** — the whole pool spreads over whatever you are holding: one note
+  gets all 16 cards, two notes get 8 each, and so on, detuned and panned
+  across the stack. Adding a note *releases* the surplus voices off the
+  older ones rather than stealing them, so the thinning is a fade. This is
+  the loudest, widest thing the synth does; pair it with 16 voices, a little
+  Detune, and Width above 100%.
+
+## Step sequencer
+
+Two tracks x 16 steps, sharing the arp's rate / division / sync / gate (arp
+and sequencer are mutually exclusive). Each track has its own loop length —
+different lengths give polymeter — plus mute and an engine target, so track
+A can be a CS-80 bass under a JP-8 track B. **Live playing runs on top of a
+running sequence**, which is the point of it.
+
+- **REC** step-records into the armed track from the cursor: play a note or
+  chord, and the cursor advances when you let go. Stops after one lap.
+- **Click** a step to move the cursor there, and to drop in any keys you are
+  currently holding. **Drag** up/down transposes a step, **double-click**
+  clears it, **right-click** opens the step/track menu (clear, set loop
+  length here, copy A/B, transpose an octave).
+
 ## Everything else
 
-Poly / Mono / Legato / Unison (with detune + stereo spread), hold latch,
-arpeggiator with an "As Played" sequencer mode (sync or free-rate), portamento
-(off/legato/always), pitch wheel (sprung), full MIDI learn (right-click any
-knob), chorus / delay / tremolo FX, live output oscilloscope, velocity
-sensitivity, master tune/volume.
+Hold latch, arpeggiator with an "As Played" mode (sync or free-rate), pitch
+wheel (sprung), full MIDI learn (right-click any knob), chorus / delay /
+tremolo FX, output width control, live oscilloscope and vector (lissajous)
+display, velocity sensitivity, master tune/volume.
+
+Parameters are smoothed at control rate inside each voice, so sweeping a
+cutoff — by mouse, arrow key or MIDI CC — glides instead of stepping.
 
 **VST3 insert chain** — the panel next to the keyboard loads up to four
 external VST3 effects at the end of the chain (post-FX, pre master volume).
@@ -103,8 +134,10 @@ incrementally, so a rescan resumes where the crash happened.
 | `C` / `V` | velocity down / up |
 | `B` | toggle Hold |
 | `N` | toggle Arp |
+| `M` | sequencer play / stop |
+| `R` | sequencer record |
 | `←` / `→` | select previous / next control (click also selects) |
-| `↑` / `↓` | adjust the selected control |
+| `↑` / `↓` | adjust the selected control — hold to sweep it smoothly |
 | `Shift+↑` / `Shift+↓` | pitch bend (springs back) |
 | `Esc` | deselect |
 
@@ -114,7 +147,7 @@ Mappings are saved with the plugin state.
 ## Code map
 
 - `Source/DSP/Voice.h` — one voice card, playable as CS-80 or JP-8 per note
-- `Source/DSP/SynthEngine.h` — voice allocation, modes, hold, arp, split, global LFOs
+- `Source/DSP/SynthEngine.h` — voice allocation, modes, hold, arp, step sequencer, split, global LFOs
 - `Source/DSP/CS80Filter.h`, `JP8Filter.h`, `Oscillator.h`, `Envelope.h`, `LFO.h`, `Effects.h`
 - `Source/PluginProcessor.*` — parameters, MIDI handling, MIDI learn, FX chain
 - `Source/PluginEditor.*` — flat UI, scope, pitch wheel, computer-key handling

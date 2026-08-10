@@ -38,8 +38,16 @@ struct VoiceParams
     float drift = 0.35f;
     float stereoSpread = 0.6f;
     float csGain = 1.f, jpGain = 1.f;   // CS/JP mix (Split & Layer modes)
-    float glideTime = 0.05f;
-    int   glideMode = 0;           // 0 off, 1 legato, 2 always
+
+    // Portamento is per-engine: the two voice cards glide independently,
+    // so a JP-8 lead can slide while the CS-80 pad underneath does not.
+    struct GlideCfg
+    {
+        float time = 0.05f;
+        int   mode = 0;            // 0 off, 1 legato, 2 always
+    };
+    GlideCfg glide[2];             // indexed by VoiceModel
+
     float masterTuneCents = 0.f;
 
     // Per-block modulation state computed by the engine:
@@ -123,6 +131,9 @@ public:
         else if (! aEnv.isActive())
             currentNoteF = targetNoteF;
 
+        if (! wasActive())
+            smoothInit = true;      // snap the control smoothers, don't sweep in
+
         if (retrigger || ! aEnv.isActive())
         {
             const float ts = 1.f + tolEnvScale * params->drift;
@@ -160,6 +171,9 @@ public:
     }
 
     void noteOff()               { held = false; if (! sustained) release(); }
+    // Unconditional: used when the engine retires a surplus stack voice,
+    // which must fade out even with the sustain pedal down.
+    void releaseNow()            { held = false; sustained = false; release(); }
     void setSustained (bool s)   { sustained = s; if (! s && ! held) release(); }
     void release()               { fEnv.noteOff(); aEnv.noteOff(); }
     void kill()                  { fEnv.kill(); aEnv.kill(); held = false; sustained = false; }
@@ -196,21 +210,21 @@ public:
                 {
                     // PWM from the dedicated PWM LFO (per channel depth)
                     float s0 = 0.f, p0 = 0.f, s1 = 0.f, p1 = 0.f;
-                    float pwA = clampf (pwEff[0] + P.osc[0].pwmDepth * 0.45f * pwmBuf[idx], 0.03f, 0.97f);
-                    float pwB = clampf (pwEff[1] + P.osc[1].pwmDepth * 0.45f * pwmBuf[idx], 0.03f, 0.97f);
+                    float pwA = clampf (pwEff[0] + pwmDepth[0] * 0.45f * pwmBuf[idx], 0.03f, 0.97f);
+                    float pwB = clampf (pwEff[1] + pwmDepth[1] * 0.45f * pwmBuf[idx], 0.03f, 0.97f);
                     vco[0].tick (pwA, s0, p0);
                     vco[1].tick (pwB, s1, p1);
 
-                    if (P.osc[0].on) x += (s0 * P.osc[0].saw + p0 * P.osc[0].pulse) * gain[0];
-                    if (P.osc[1].on) x += (s1 * P.osc[1].saw + p1 * P.osc[1].pulse) * gain[1];
-                    x += noise.tick() * P.noiseLevel * 0.7f;
+                    x += s0 * sawG[0] + p0 * pulseG[0];
+                    x += s1 * sawG[1] + p1 * pulseG[1];
+                    x += noise.tick() * noiseG * 0.7f;
 
                     x = filter.process (x);
                 }
                 else
                 {
                     const auto& J = P.jp;
-                    const float pw = clampf (pwEff[0] + J.pwmDepth * 0.45f * pwmBuf[idx], 0.03f, 0.97f);
+                    const float pw = clampf (pwEff[0] + pwmDepth[0] * 0.45f * pwmBuf[idx], 0.03f, 0.97f);
 
                     // cross-mod: VCO2 (previous sample) FMs VCO1
                     if (J.xmod > 0.001f)
@@ -229,7 +243,7 @@ public:
                                    : J.vco2Wave == 2 ? p1 : noise.tick();
                     lastVco2 = o2;
 
-                    x = (o1 * (1.f - J.mix) + o2 * J.mix) * 1.2f;
+                    x = (o1 * jpMixA + o2 * jpMixB) * 1.2f;
                     x = jpFilter.process (x);
                 }
 
@@ -249,9 +263,20 @@ public:
 private:
     static float clampf (float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+    // One-pole toward a target, run once per control block (every kCtrl
+    // samples). This is what keeps a parameter *change* - dragging a fader
+    // or arrow-keying it - from arriving as an audible step: the block-rate
+    // snapshot in VoiceParams is the target, never the value we use.
+    void smoothTo (float& cur, float target, float coef) const
+    {
+        if (smoothInit) cur = target;
+        else            cur += (target - cur) * coef;
+    }
+
     void updateControl (const VoiceParams& P, float lfoVal)
     {
         const float ctrlDt = (float) kCtrl / sr;
+        const float smCoef = 1.f - std::exp (-ctrlDt / 0.02f);   // ~20 ms
         heldSeconds += held ? ctrlDt : 0.f;
 
         // --- Touch pressure: simulated ramp while held, or real AT if higher
@@ -263,12 +288,13 @@ private:
         driftWalk += (noise.tick() - driftWalk * 0.02f) * 0.01f;
         const float driftCents = (tolPitchCents + driftWalk * 40.f) * P.drift;
 
-        // --- Glide
-        if (P.glideMode == 0 || P.glideTime <= 0.001f)
+        // --- Glide (per-engine setting; this card follows its own model)
+        const auto& G = P.glide[model == modelJP8 ? 1 : 0];
+        if (G.mode == 0 || G.time <= 0.001f)
             currentNoteF = targetNoteF;
         else
         {
-            const float coef = 1.f - std::exp (-ctrlDt * 6.f / std::fmax (0.01f, P.glideTime));
+            const float coef = 1.f - std::exp (-ctrlDt * 6.f / std::fmax (0.01f, G.time));
             currentNoteF += (targetNoteF - currentNoteF) * coef;
         }
 
@@ -291,9 +317,13 @@ private:
                 const float hz = 440.f * std::exp2 ((semis - 69.f) / 12.f);
                 vco[c].setFrequency (hz, sr);
                 vcoHz[c] = hz;
-                pwEff[c] = O.pw + tolPwOffset * P.drift;
-                gain[c]  = O.level;
+                smoothTo (pwEff[c], O.pw + tolPwOffset * P.drift, smCoef);
+                smoothTo (pwmDepth[c], O.pwmDepth, smCoef);
+                // level folded into the mix gains so a fader move can't step
+                smoothTo (sawG[c],   O.on ? O.saw   * O.level : 0.f, smCoef);
+                smoothTo (pulseG[c], O.on ? O.pulse * O.level : 0.f, smCoef);
             }
+            smoothTo (noiseG, P.noiseLevel, smCoef);
         }
         else
         {
@@ -304,14 +334,24 @@ private:
             vcoHz[1] = 440.f * std::exp2 ((s2 - 69.f) / 12.f);
             vco[0].setFrequency (vcoHz[0], sr);
             vco[1].setFrequency (vcoHz[1], sr);
-            pwEff[0] = J.pw + tolPwOffset * P.drift;
+            smoothTo (pwEff[0], J.pw + tolPwOffset * P.drift, smCoef);
+            smoothTo (pwmDepth[0], J.pwmDepth, smCoef);
+            smoothTo (jpMixA, 1.f - J.mix, smCoef);
+            smoothTo (jpMixB, J.mix, smCoef);
         }
 
-        // --- Filter cutoff modulation (octave domain)
+        // --- Filter cutoff modulation (octave domain). Only the *parameter*
+        // is smoothed - envelope, LFO and touch modulation must stay fast.
         const float lpBase   = model == modelCS80 ? P.lpfCutoff : P.jp.lpf;
+        const float hpBase   = model == modelCS80 ? P.hpfCutoff : P.jp.hpf;
         const float keyTrk   = model == modelCS80 ? P.keyTrack : P.jp.keyTrack;
         const float envAmt   = model == modelCS80 ? P.filterEnvAmt : P.jp.envAmt;
-        float oct = std::log2 (std::fmax (30.f, lpBase));
+        const float resTgt   = model == modelCS80 ? P.resonance : P.jp.res;
+        smoothTo (lpOct, std::log2 (std::fmax (30.f, lpBase)), smCoef);
+        smoothTo (hpOct, std::log2 (std::fmax (10.f, hpBase)), smCoef);
+        smoothTo (resSm, resTgt, smCoef);
+        smoothTo (driveSm, P.filterDrive, smCoef);
+        float oct = lpOct;
         oct += keyTrk * (currentNoteF - 60.f) / 12.f;
         oct += envAmt * fEnv.value() * 5.f;
         oct += lfoVal * P.lfoToFilter * 3.f;
@@ -319,26 +359,30 @@ private:
         oct += (velocity - 0.7f) * P.velToFilter * 2.f;
         oct += tolCutoffOct * P.drift;
         const float lpHz = std::exp2 (clampf (oct, 4.3f, 14.2f)); // ~20 Hz .. 18.8 kHz
+        const float hpHz = std::exp2 (hpOct);
         if (model == modelCS80)
-            filter.setParams (P.hpfCutoff, lpHz, P.resonance, P.filterDrive);
+            filter.setParams (hpHz, lpHz, resSm, driveSm);
         else
-            jpFilter.setParams (P.jp.hpf, lpHz, P.jp.res, P.jp.slope24);
+            jpFilter.setParams (hpHz, lpHz, resSm, P.jp.slope24);
 
         // --- Amp scaling: velocity, touch level, card level tolerance
-        ampScale = (1.f - P.velToAmp * (1.f - velocity))
-                 * (1.f + pressure * P.touchToLevel * 0.6f)
-                 * (1.f + tolLevel * P.drift)
-                 * noteGain
-                 * (model == modelCS80 ? P.csGain : P.jpGain);
+        smoothTo (ampScale, (1.f - P.velToAmp * (1.f - velocity))
+                          * (1.f + pressure * P.touchToLevel * 0.6f)
+                          * (1.f + tolLevel * P.drift)
+                          * noteGain
+                          * (model == modelCS80 ? P.csGain : P.jpGain), smCoef);
 
         // --- Pan: spread places cards across the field (odd/even L/R like
         // the CS-80 voice card outputs), plus tolerance offset + unison spread
         float pan = cardSide * 0.5f * P.stereoSpread
                   + tolPan * P.drift + unisonPan;
         pan = clampf (pan, -1.f, 1.f);
-        const float a = (pan + 1.f) * 0.25f * 3.14159265f;
+        smoothTo (panPos, pan, smCoef);
+        const float a = (panPos + 1.f) * 0.25f * 3.14159265f;
         panL = std::cos (a);
         panR = std::sin (a);
+
+        smoothInit = false;
     }
 
     const VoiceParams* params = nullptr;
@@ -363,10 +407,15 @@ private:
     float heldSeconds = 0.f, pressure = 0.f, polyPressure = 0.f;
     float driftWalk = 0.f;
 
-    // control-rate cached values
-    float pwEff[2] = { 0.5f, 0.5f };
-    float gain[2] = { 0.9f, 0.9f };
-    float ampScale = 1.f, panL = 0.707f, panR = 0.707f;
+    // control-rate cached values, one-pole smoothed toward the block-rate
+    // parameter snapshot (see smoothTo). smoothInit snaps them all on the
+    // first control block of a note so a fresh voice never sweeps in.
+    bool  smoothInit = true;
+    float pwEff[2] = { 0.5f, 0.5f }, pwmDepth[2] = { 0.f, 0.f };
+    float sawG[2] = { 0.f, 0.f }, pulseG[2] = { 0.f, 0.f }, noiseG = 0.f;
+    float jpMixA = 0.5f, jpMixB = 0.5f;
+    float lpOct = 13.f, hpOct = 4.32f, resSm = 0.15f, driveSm = 0.2f;
+    float ampScale = 1.f, panPos = 0.f, panL = 0.707f, panR = 0.707f;
 
     // per-card tolerances
     float tolPitchCents = 0.f, tolCutoffOct = 0.f, tolEnvScale = 0.f;
