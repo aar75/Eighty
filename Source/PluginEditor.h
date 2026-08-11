@@ -337,6 +337,50 @@ public:
     }
 };
 
+// ---------------------------------------------------- plugin chooser
+// Type-to-search list of scanned plugins, shown in a call-out from the
+// "+ FX" / "+ SET SYNTH" buttons. Typing filters on name and manufacturer,
+// up/down moves, Return loads, Escape closes.
+class PluginChooser : public juce::Component,
+                      private juce::ListBoxModel,
+                      private juce::TextEditor::Listener,
+                      private juce::KeyListener
+{
+public:
+    PluginChooser (juce::Array<juce::PluginDescription> items,
+                   const juce::String& title,
+                   std::function<void (const juce::PluginDescription&)> onPick,
+                   std::function<void()> onRescan);
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void visibilityChanged() override;
+
+private:
+    int getNumRows() override { return filtered.size(); }
+    void paintListBoxItem (int row, juce::Graphics&, int w, int h, bool selected) override;
+    void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override;
+    void returnKeyPressed (int row) override;
+    void textEditorTextChanged (juce::TextEditor&) override;
+    void textEditorReturnKeyPressed (juce::TextEditor&) override;
+    void textEditorEscapeKeyPressed (juce::TextEditor&) override;
+    bool keyPressed (const juce::KeyPress&, juce::Component*) override;
+
+    void refilter();
+    void choose (int row);
+    void dismiss();
+
+    juce::Array<juce::PluginDescription> all;
+    juce::Array<int> filtered;
+    juce::String title;
+    std::function<void (const juce::PluginDescription&)> pick;
+    std::function<void()> rescan;
+
+    juce::TextEditor search;
+    juce::ListBox list { {}, this };
+    juce::TextButton rescanBtn { "RESCAN VST3 FOLDERS" };
+};
+
 // ------------------------------------------- external VST3 insert panel
 class InsertPanel : public juce::Component, private juce::Timer
 {
@@ -349,7 +393,7 @@ public:
 private:
     void timerCallback() override;
     void refresh();
-    void showAddMenu (bool instruments);
+    void showChooser (bool instruments);
     void openWindowFor (juce::AudioPluginInstance*);
     void closeWindowFor (juce::AudioPluginInstance*);
 
@@ -408,6 +452,14 @@ private:
                               std::initializer_list<const char*> paramIDs, int width);
     void wireSlider (LearnSlider&, juce::Label& value, const juce::String& paramID);
 
+    // preset bar (tab band)
+    void buildPresetBar();
+    void showPresetMenu();
+    void promptSavePreset();
+    void stepPreset (int dir);
+    void applyPreset (const juce::File&);
+    void refreshPresetName();
+
     // sequencer row: controls that live loose on the editor, not in a Section
     LedToggle*  makeLooseLed (const juce::String& paramID, const juce::String& label);
     ChipStack*  makeLooseChips (const juce::String& paramID, juce::StringArray labels,
@@ -452,6 +504,12 @@ private:
               *seqMuteLed[2] = { nullptr, nullptr };
     ChipStack *seqTrackChips = nullptr, *seqEngChips[2] = { nullptr, nullptr };
     juce::TextButton seqClearBtn { "CLEAR" }, seqCopyBtn { "COPY" };
+
+    // preset bar
+    juce::TextButton presetPrevBtn { "<" }, presetNextBtn { ">" },
+                     presetNameBtn { "Init" }, presetSaveBtn { "SAVE" };
+    std::unique_ptr<juce::AlertWindow> saveWindow;
+    juce::String shownPresetName;
     juce::MidiKeyboardComponent keyboard;
     juce::Label titleLabel, subLabel, statusLabel, hintLabel;
     PanelChips panelChips;

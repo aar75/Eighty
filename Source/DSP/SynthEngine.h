@@ -28,6 +28,8 @@ public:
     // Stack may give a single note the entire pool - that is the point of it
     static constexpr int kMaxStack = kMaxVoices;
 
+    static constexpr int kAnyOwner = -99;   // wildcard for voice stealing
+
     struct EngineSettings   // refreshed per block by the processor
     {
         // engine assignment: 0 = CS-80 everywhere, 1 = JP-8 everywhere,
@@ -125,6 +127,7 @@ public:
         int     gateCounter = -1;
         SeqStep sounding;                  // what this track is holding now
         int     soundModel = -1;           // forced model it was fired with
+        int     owner = 0;                 // voice owner tag (= track index)
     };
 
     struct StepSeq
@@ -333,6 +336,16 @@ public:
         return n;
     }
 
+    // Voices currently held by one owner (Voice::kOwnerLive, or a sequencer
+    // track index) - how you tell live playing apart from the pattern.
+    int heldVoiceCount (int owner) const
+    {
+        int n = 0;
+        for (auto& v : voices)
+            if (v.isHeld() && v.currentOwner() == owner) ++n;
+        return n;
+    }
+
     // ---------------- Render ---------------------------------------------
     void render (float* left, float* right, int numSamples, int blockOffset = 0)
     {
@@ -432,46 +445,52 @@ private:
         return modelsForNote (note, models);
     }
 
-    void triggerNote (int note, float vel, int forceModel = -1)
+    void triggerNote (int note, float vel, int forceModel = -1,
+                      int owner = Voice::kOwnerLive)
     {
         int models[2];
         const int layers = layersFor (note, models, forceModel);
         const float gain = layers == 2 ? 0.72f : 1.f;
         for (int li = 0; li < layers; ++li)
-            triggerForModel (note, vel, models[li], gain);
+            triggerForModel (note, vel, models[li], gain, owner);
     }
 
-    void triggerForModel (int note, float vel, int model, float gain)
+    // Mono/legato/unison keep a single shared note stack per engine, so a
+    // sequencer track and the keyboard genuinely contend for it there -
+    // ownership only separates them in the poly and stack modes, which is
+    // where playing over a pattern makes sense anyway.
+    void triggerForModel (int note, float vel, int model, float gain, int owner)
     {
         auto& cfg = cfgFor (model);
         switch (cfg.mode)
         {
-            case Mode::poly:   triggerPolyModel   (note, vel, model, gain); break;
-            case Mode::mono:   triggerMonoModel   (note, vel, model, gain, true); break;
-            case Mode::legato: triggerMonoModel   (note, vel, model, gain, monoStack[model].empty()); break;
-            case Mode::unison: triggerUnisonModel (note, vel, model, gain, true); break;
-            case Mode::stack:  triggerStackModel  (note, vel, model, gain); break;
+            case Mode::poly:   triggerPolyModel   (note, vel, model, gain, owner); break;
+            case Mode::mono:   triggerMonoModel   (note, vel, model, gain, true, owner); break;
+            case Mode::legato: triggerMonoModel   (note, vel, model, gain, monoStack[model].empty(), owner); break;
+            case Mode::unison: triggerUnisonModel (note, vel, model, gain, true, owner); break;
+            case Mode::stack:  triggerStackModel  (note, vel, model, gain, owner); break;
         }
         if (isMonoish (cfg.mode))
             addUnique (monoStack[model], note);
         lastTriggeredNote[model] = note;
     }
 
-    void releaseNote (int note, int forceModel = -1)
+    void releaseNote (int note, int forceModel = -1, int owner = Voice::kOwnerLive)
     {
         int models[2];
         const int layers = layersFor (note, models, forceModel);
         for (int li = 0; li < layers; ++li)
-            releaseForModel (note, models[li]);
+            releaseForModel (note, models[li], owner);
     }
 
-    void releaseForModel (int note, int model)
+    void releaseForModel (int note, int model, int owner = Voice::kOwnerLive)
     {
         auto& cfg = cfgFor (model);
         if (! isMonoish (cfg.mode))     // poly and stack: release every voice on the note
         {
             for (auto& v : voices)
-                if (v.currentNote() == note && v.currentModel() == model && v.isHeld())
+                if (v.currentNote() == note && v.currentModel() == model
+                    && v.currentOwner() == owner && v.isHeld())
                 {
                     if (sustainPedal) v.setSustained (true);
                     v.noteOff();
@@ -489,9 +508,9 @@ private:
                 int mdls[2];
                 const int lyr = modelsForNote (back, mdls);
                 const float gain = lyr == 2 ? 0.72f : 1.f;
-                if (cfg.mode == Mode::mono)        triggerMonoModel   (back, lastVelocity, model, gain, true);
-                else if (cfg.mode == Mode::legato) triggerMonoModel   (back, lastVelocity, model, gain, false);
-                else                                triggerUnisonModel (back, lastVelocity, model, gain, false);
+                if (cfg.mode == Mode::mono)        triggerMonoModel   (back, lastVelocity, model, gain, true, owner);
+                else if (cfg.mode == Mode::legato) triggerMonoModel   (back, lastVelocity, model, gain, false, owner);
+                else                                triggerUnisonModel (back, lastVelocity, model, gain, false, owner);
             }
         }
         else if (cfg.mode == Mode::unison)
@@ -525,27 +544,27 @@ private:
         return (v != nullptr && v->isHeld()) ? v->currentNote() : -1;
     }
 
-    void triggerPolyModel (int note, float vel, int model, float gain)
+    void triggerPolyModel (int note, float vel, int model, float gain, int owner)
     {
         float glideFrom = glideSource (model, false);
-        Voice* v = allocateVoice (model);
-        v->noteOn (note, vel, 0.f, 0.f, glideFrom, true, gain, model);
+        Voice* v = allocateVoice (model, owner);
+        v->noteOn (note, vel, 0.f, 0.f, glideFrom, true, gain, model, owner);
         if (sustainPedal) v->setSustained (true);
     }
 
-    void triggerMonoModel (int note, float vel, int model, float gain, bool retrig)
+    void triggerMonoModel (int note, float vel, int model, float gain, bool retrig, int owner)
     {
         Voice*& v = monoVoice[model];
-        if (v == nullptr) v = allocateVoice (model);
+        if (v == nullptr) v = allocateVoice (model, owner);
         float glideFrom = glideSource (model, v->wasActive());
         if (! retrig && v->wasActive())
             v->changeNote (note);
         else
-            v->noteOn (note, vel, 0.f, 0.f, glideFrom, retrig || ! v->wasActive(), gain, model);
+            v->noteOn (note, vel, 0.f, 0.f, glideFrom, retrig || ! v->wasActive(), gain, model, owner);
         if (sustainPedal) v->setSustained (true);
     }
 
-    void triggerUnisonModel (int note, float vel, int model, float noteGain, bool retrig)
+    void triggerUnisonModel (int note, float vel, int model, float noteGain, bool retrig, int owner)
     {
         auto& cfg = cfgFor (model);
         const int count = std::min (cfg.unisonCount, kMaxVoices);
@@ -565,12 +584,12 @@ private:
         {
             float pos = count > 1 ? ((float) i / (float) (count - 1) - 0.5f) * 2.f : 0.f;
             Voice*& v = stack[(size_t) i];
-            if (v == nullptr) v = allocateVoice (model);
+            if (v == nullptr) v = allocateVoice (model, owner);
             if (! retrig && v->wasActive())
                 v->changeNote (note);
             else
                 v->noteOn (note, vel, pos * maxDet, pos * 0.8f, glideFrom,
-                           retrig || ! v->wasActive(), gain, model);
+                           retrig || ! v->wasActive(), gain, model, owner);
             if (sustainPedal) v->setSustained (true);
         }
     }
@@ -582,10 +601,14 @@ private:
     // one thin oscillator pair. As notes are added the existing stacks are
     // *released* down to size rather than stolen, so thinning is a fade,
     // not a click.
-    void triggerStackModel (int note, float vel, int model, float noteGain)
+    void triggerStackModel (int note, float vel, int model, float noteGain, int owner)
     {
         auto& cfg = cfgFor (model);
         const int cap = std::min (cfg.polyVoices, kMaxVoices);
+        // The pool is shared, so the split is over *every* note sounding on
+        // this engine, whoever triggered it: a sequencer track must not grab
+        // all 16 cards and evict what you are playing live. Only note-off
+        // respects ownership - thinning here is a release, not a steal.
         const int distinct = distinctHeldNotes (model, note) + 1;
         const int per = std::clamp (cap / std::max (1, distinct), 1, kMaxStack);
 
@@ -597,11 +620,14 @@ private:
         for (int i = 0; i < per; ++i)
         {
             const float pos = per > 1 ? ((float) i / (float) (per - 1) - 0.5f) * 2.f : 0.f;
-            Voice* v = allocateVoice (model);
-            v->noteOn (note, vel, pos * maxDet, pos * 0.8f, glideFrom, true, gain, model);
+            Voice* v = allocateVoice (model, owner);
+            v->noteOn (note, vel, pos * maxDet, pos * 0.8f, glideFrom, true, gain, model, owner);
             if (sustainPedal) v->setSustained (true);
         }
     }
+
+    bool inStackGroup (const Voice& v, int model) const
+    { return v.isHeld() && v.currentModel() == model; }
 
     int distinctHeldNotes (int model, int exceptNote) const
     {
@@ -609,13 +635,12 @@ private:
         for (int i = 0; i < kMaxVoices; ++i)
         {
             const Voice& v = voices[(size_t) i];
-            if (! v.isHeld() || v.currentModel() != model) continue;
+            if (! inStackGroup (v, model)) continue;
             const int note = v.currentNote();
             if (note == exceptNote) continue;
             bool seen = false;
             for (int j = 0; j < i && ! seen; ++j)
-                seen = voices[(size_t) j].isHeld()
-                    && voices[(size_t) j].currentModel() == model
+                seen = inStackGroup (voices[(size_t) j], model)
                     && voices[(size_t) j].currentNote() == note;
             if (! seen) ++n;
         }
@@ -627,13 +652,12 @@ private:
         for (int i = 0; i < kMaxVoices; ++i)
         {
             Voice& v = voices[(size_t) i];
-            if (! v.isHeld() || v.currentModel() != model) continue;
+            if (! inStackGroup (v, model)) continue;
             const int note = v.currentNote();
             if (note == exceptNote) continue;
             int seen = 0;
             for (int j = 0; j < i; ++j)
-                if (voices[(size_t) j].isHeld()
-                    && voices[(size_t) j].currentModel() == model
+                if (inStackGroup (voices[(size_t) j], model)
                     && voices[(size_t) j].currentNote() == note) ++seen;
             if (seen >= per) v.releaseNow();
         }
@@ -658,7 +682,7 @@ private:
     // a voice actively serving the other engine while under its own cap -
     // otherwise two independent per-engine polyphony limits would just
     // fight over the same low index range.
-    Voice* allocateVoice (int model)
+    Voice* allocateVoice (int model, int owner)
     {
         const int cap = std::min (cfgFor (model).polyVoices, kMaxVoices);
         int activeForModel = 0;
@@ -669,23 +693,38 @@ private:
             for (auto& v : voices)
                 if (! v.wasActive()) return &v;
 
-        // At/over budget, or no free voice at all: steal this model's own
-        // quietest-releasing voice first, then its oldest.
-        Voice* best = nullptr; float bestLevel = 1e9f;
-        for (auto& v : voices)
-            if (v.currentModel() == model && v.isReleasing() && v.envLevel() < bestLevel)
-                { best = &v; bestLevel = v.envLevel(); }
-        if (best) return best;
+        // At/over budget, or no free voice at all. Steal from the same owner
+        // before anyone else, so a busy sequencer track recycles its own
+        // cards instead of chewing through notes you are playing live.
+        auto quietestReleasing = [this, model] (int wantOwner) -> Voice*
+        {
+            Voice* best = nullptr; float bestLevel = 1e9f;
+            for (auto& v : voices)
+                if (v.currentModel() == model && v.isReleasing() && v.envLevel() < bestLevel
+                    && (wantOwner == kAnyOwner || v.currentOwner() == wantOwner))
+                    { best = &v; bestLevel = v.envLevel(); }
+            return best;
+        };
+        auto oldestOf = [this, model] (int wantOwner) -> Voice*
+        {
+            uint32_t oldest = 0xFFFFFFFFu; Voice* pick = nullptr;
+            for (auto& v : voices)
+                if (v.currentModel() == model && v.age() < oldest
+                    && (wantOwner == kAnyOwner || v.currentOwner() == wantOwner))
+                    { oldest = v.age(); pick = &v; }
+            return pick;
+        };
 
-        uint32_t oldest = 0xFFFFFFFFu; Voice* pick = nullptr;
-        for (auto& v : voices)
-            if (v.currentModel() == model && v.age() < oldest) { oldest = v.age(); pick = &v; }
-        if (pick) return pick;
+        if (Voice* v = quietestReleasing (owner))    return v;
+        if (Voice* v = quietestReleasing (kAnyOwner)) return v;
+        if (Voice* v = oldestOf (owner))             return v;
+        if (Voice* v = oldestOf (kAnyOwner))         return v;
 
         // This model has no voices of its own to steal from (the other
         // engine currently holds all of them) - fall back to the globally
         // oldest voice so we always return something playable.
-        oldest = 0xFFFFFFFFu; pick = &voices[0];
+        uint32_t oldest = 0xFFFFFFFFu;
+        Voice* pick = &voices[0];
         for (auto& v : voices)
             if (v.age() < oldest) { oldest = v.age(); pick = &v; }
         return pick;
@@ -915,8 +954,9 @@ private:
 
     void advanceSeqStep (int stepLen, int sampleOffset)
     {
-        for (auto& t : seq.tracks)
+        for (int ti = 0; ti < StepSeq::kTracks; ++ti)
         {
+            auto& t = seq.tracks[(size_t) ti];
             stopTrack (t, sampleOffset);
             const int len = std::clamp (t.length, 1, SeqTrack::kSteps);
             t.playStep = (t.playStep + 1) % len;
@@ -930,10 +970,11 @@ private:
             {
                 const float vel = (float) st.vel[i] / 127.f;
                 echo (st.note[i], vel, true, sampleOffset);
-                triggerNote (st.note[i], vel, forced);
+                triggerNote (st.note[i], vel, forced, ti);
             }
             t.sounding = st;
             t.soundModel = forced;
+            t.owner = ti;
             if (n > 0)
                 t.gateCounter = std::max (16, (int) (es.arpGate * (float) stepLen));
         }
@@ -945,7 +986,7 @@ private:
         for (uint8_t i = 0; i < n; ++i)
         {
             echo (t.sounding.note[i], 0.f, false, sampleOffset);
-            releaseNote (t.sounding.note[i], t.soundModel);
+            releaseNote (t.sounding.note[i], t.soundModel, t.owner);
         }
         t.sounding.clear();
     }

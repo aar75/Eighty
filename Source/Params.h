@@ -28,6 +28,15 @@ namespace ID
     inline constexpr const char* noiseLevel    = "noiseLevel";
     inline constexpr const char* pwmRate       = "pwmRate";
 
+    // Sub-oscillator, one per engine: a square or triangle an octave or two
+    // below the engine's first oscillator, straight into the filter.
+    inline constexpr const char* csSubLevel = "csSubLevel";
+    inline constexpr const char* csSubOct   = "csSubOct";    // -1 / -2 octaves
+    inline constexpr const char* csSubWave  = "csSubWave";   // Square / Triangle
+    inline constexpr const char* jpSubLevel = "jpSubLevel";
+    inline constexpr const char* jpSubOct   = "jpSubOct";
+    inline constexpr const char* jpSubWave  = "jpSubWave";
+
     // Filter (CS-80 topology: 12 dB/oct HPF into 12 dB/oct resonant LPF)
     inline constexpr const char* hpfCutoff     = "hpfCutoff";
     inline constexpr const char* lpfCutoff     = "lpfCutoff";
@@ -201,6 +210,16 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<P>(ID::noiseLevel, "Noise", pct, 0.f));
     p.push_back(std::make_unique<P>(ID::pwmRate, "PWM Rate",
         NormalisableRange<float>(0.05f, 20.f, 0.f, 0.4f), 0.6f));
+
+    // Sub-oscillators
+    StringArray subOcts { "-1", "-2" };
+    StringArray subWaves { "Sqr", "Tri" };
+    p.push_back(std::make_unique<P>(ID::csSubLevel, "CS Sub", pct, 0.f));
+    p.push_back(std::make_unique<Pc>(ID::csSubOct, "CS Sub Octave", subOcts, 0));
+    p.push_back(std::make_unique<Pc>(ID::csSubWave, "CS Sub Wave", subWaves, 0));
+    p.push_back(std::make_unique<P>(ID::jpSubLevel, "JP Sub", pct, 0.f));
+    p.push_back(std::make_unique<Pc>(ID::jpSubOct, "JP Sub Octave", subOcts, 0));
+    p.push_back(std::make_unique<Pc>(ID::jpSubWave, "JP Sub Wave", subWaves, 0));
 
     // Filter
     p.push_back(std::make_unique<P>(ID::hpfCutoff, "HPF Cutoff", freqRange, 20.f));

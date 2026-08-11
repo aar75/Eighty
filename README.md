@@ -68,6 +68,11 @@ Built plugins are copied to `~/Library/Audio/Plug-Ins/{VST3,Components}`.
   switchable **12/24 dB/oct** (24 dB mode resonates harder, like the original).
 - Its own filter/amp ADSRs. Drift, touch, LFO, and FX apply to both engines.
 
+Both engines also get a **sub-oscillator** (in each panel's MIX section): a
+square or triangle one or two octaves below that engine's first oscillator,
+mixed in ahead of the filter. Neither original had one — it is there for
+weight, and it is the cheapest way to make a thin patch sound large.
+
 ## Voice modes
 
 Each engine picks its own mode and its own portamento, so a JP-8 lead can
@@ -97,25 +102,45 @@ running sequence**, which is the point of it.
   clears it, **right-click** opens the step/track menu (clear, set loop
   length here, copy A/B, transpose an octave).
 
+Live notes are tagged with a different voice owner from each sequencer
+track, so a step ending never releases a note you are holding, and a busy
+track recycles its own voice cards before touching yours.
+
+## Presets
+
+The bar in the tab strip is the whole preset system: `<` / `>` step through
+the folder, the name button opens the list, **SAVE** snapshots the current
+sound. A preset is every parameter plus the per-key engine map and the
+sequencer pattern — not the MIDI-learn map (that belongs to your hardware)
+and not the hosted VST3 chain (reloading plugins on every switch would
+stall). Files are `.eighty` XML in
+`~/Library/Application Support/Eighty/Presets`, and the name menu has a
+"Reveal folder" item. An asterisk after the name means you have edited it
+since it was loaded.
+
 ## Everything else
 
 Hold latch, arpeggiator with an "As Played" mode (sync or free-rate), pitch
 wheel (sprung), full MIDI learn (right-click any knob), chorus / delay /
-tremolo FX, output width control, live oscilloscope and vector (lissajous)
-display, velocity sensitivity, master tune/volume.
+tremolo FX, output width control, velocity sensitivity, master tune/volume.
+
+Two displays in the header: a triggered waveform trace, and a vector
+(lissajous) display rotated so mono draws a vertical line and stereo width
+opens it sideways — a loud, wide patch fills the circle.
 
 Parameters are smoothed at control rate inside each voice, so sweeping a
 cutoff — by mouse, arrow key or MIDI CC — glides instead of stepping.
 
 **VST3 insert chain** — the panel next to the keyboard loads up to four
 external VST3 effects at the end of the chain (post-FX, pre master volume).
-"+ FX" scans the standard VST3 folders (cached afterwards; instruments are
-filtered out), each loaded plugin opens its own editor window, and plugin
-states are saved with the Eighty preset. Reported latency is forwarded to
-the host.
+"+ FX" opens a type-to-search list of scanned plugins (filter on name or
+manufacturer, up/down to move, Return to load); each loaded plugin opens
+its own editor window, and plugin states are saved with the host session.
+Reported latency is forwarded to the host.
 
-**VST3 synth layer** — "+ SET SYNTH" in the same panel loads any VST3
-instrument as a third layer across all keys, with its own level knob. It's
+**VST3 synth layer** — "+ SET SYNTH" in the same panel opens the same
+searchable list, filtered to instruments, and loads one as a third layer
+across all keys with its own level knob. It's
 fed the engine's *effective* note stream — so it follows the arpeggiator,
 hold latch, pitch wheel, mod wheel and sustain pedal — and its audio runs
 through Eighty's FX chain.

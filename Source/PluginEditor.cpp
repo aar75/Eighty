@@ -59,6 +59,12 @@ juce::String tipFor (const juce::String& id)
         { ID::osc2Level, "Output level of channel II" },
         { ID::noiseLevel,"White noise level (CS-80 engine only)" },
         { ID::pwmRate,   "Speed of the shared PWM LFO (both engines)" },
+        { ID::csSubLevel,"Sub-oscillator level: weight under the CS-80 oscillators, into the filter" },
+        { ID::csSubOct,  "How far below Osc I the sub sits: one or two octaves" },
+        { ID::csSubWave, "Sub waveform: square (hollow, Juno-ish) or triangle (rounder, less harmonic)" },
+        { ID::jpSubLevel,"Sub-oscillator level: weight under the JP-8 VCOs, into the filter" },
+        { ID::jpSubOct,  "How far below VCO1 the sub sits: one or two octaves" },
+        { ID::jpSubWave, "Sub waveform: square (hollow, Juno-ish) or triangle (rounder, less harmonic)" },
         { ID::hpfCutoff,   "High-pass cutoff: removes lows below this frequency (12 dB/oct)" },
         { ID::lpfCutoff,   "Low-pass cutoff: removes highs above this frequency (12 dB/oct)" },
         { ID::resonance,   "Resonance peak at the low-pass cutoff" },
@@ -787,16 +793,35 @@ void LissajousScope::paint (juce::Graphics& g)
     g.drawLine (c.x, c.y - rad, c.x, c.y + rad, 1.f);
     g.drawLine (c.x - rad, c.y, c.x + rad, c.y, 1.f);
 
-    // Mid/side rotation: y = L+R (mono energy, up), x = L-R (the difference).
-    // 1/sqrt(2) keeps a full-scale mono signal inside the circle.
+    // Mid/side rotation: y = L+R (mono energy, up), x = L-R (the difference),
+    // zoomed so a loud wide patch fills the circle instead of sitting in a
+    // dot at the middle. Overshoot is compressed *radially*, not per axis,
+    // so a hot signal rounds off against the graticule rather than squaring
+    // off into the corners.
     constexpr int frames = 1200;
+    constexpr float zoom = 2.4f;
+    auto softLimit = [] (float r)
+    {
+        constexpr float knee = 0.8f;
+        return r <= knee ? r : knee + (1.f - knee) * std::tanh ((r - knee) / (1.f - knee));
+    };
+
     juce::Path p;
     bool started = false;
     for (int i = frames; i > 0; --i)
     {
         const float L = tap.left (i), R = tap.right (i);
-        const float x = c.x + juce::jlimit (-1.f, 1.f, (L - R) * 0.7071f) * rad;
-        const float y = c.y - juce::jlimit (-1.f, 1.f, (L + R) * 0.7071f) * rad;
+        float dx = (L - R) * 0.7071f * zoom;
+        float dy = (L + R) * 0.7071f * zoom;
+        const float r = std::sqrt (dx * dx + dy * dy);
+        if (r > 1.0e-6f)
+        {
+            const float k = softLimit (r) / r;
+            dx *= k;
+            dy *= k;
+        }
+        const float x = c.x + dx * rad;
+        const float y = c.y - dy * rad;
         if (! started) { p.startNewSubPath (x, y); started = true; }
         else           p.lineTo (x, y);
     }
@@ -1244,6 +1269,151 @@ void SeqGrid::showStepMenu (int track, int step)
         });
 }
 
+// ========================================================= PluginChooser
+PluginChooser::PluginChooser (juce::Array<juce::PluginDescription> items,
+                             const juce::String& t,
+                             std::function<void (const juce::PluginDescription&)> onPick,
+                             std::function<void()> onRescan)
+    : all (std::move (items)), title (t), pick (std::move (onPick)), rescan (std::move (onRescan))
+{
+    search.setTextToShowWhenEmpty ("type to search...", ui::dim);
+    search.setFont (ui::sans (13.f));
+    search.setColour (juce::TextEditor::backgroundColourId, ui::winBg);
+    search.setColour (juce::TextEditor::textColourId, ui::ink);
+    search.setColour (juce::TextEditor::outlineColourId, ui::track);
+    search.setColour (juce::TextEditor::focusedOutlineColourId, ui::ink);
+    search.setColour (juce::TextEditor::highlightColourId, ui::scopeTrace.withAlpha (0.4f));
+    search.setColour (juce::CaretComponent::caretColourId, ui::ink);
+    search.addListener (this);
+    search.addKeyListener (this);
+    addAndMakeVisible (search);
+
+    list.setRowHeight (22);
+    list.setColour (juce::ListBox::backgroundColourId, ui::cardBg);
+    list.setOutlineThickness (0);
+    addAndMakeVisible (list);
+
+    rescanBtn.setWantsKeyboardFocus (false);
+    rescanBtn.onClick = [this] { if (rescan) rescan(); };
+    addAndMakeVisible (rescanBtn);
+
+    refilter();
+    setSize (420, 340);
+}
+
+void PluginChooser::visibilityChanged()
+{
+    // Deferred: the call-out takes keyboard focus itself as it enters its
+    // modal state, which happens after we become visible.
+    if (! isShowing()) return;
+    juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<PluginChooser> (this)]
+    {
+        if (safe != nullptr && safe->isShowing())
+            safe->search.grabKeyboardFocus();
+    });
+}
+
+void PluginChooser::paint (juce::Graphics& g)
+{
+    g.fillAll (ui::winBg);
+    g.setColour (ui::ink);
+    auto f = ui::sans (11.f, true);
+    f.setExtraKerningFactor (0.05f);
+    g.setFont (f);
+    g.drawText (title, 10, 8, getWidth() - 20, 12, juce::Justification::centredLeft);
+    g.setColour (ui::stOsc);
+    g.fillRect (10, 22, 26, 3);
+
+    if (filtered.isEmpty())
+    {
+        g.setColour (ui::dim);
+        g.setFont (ui::sans (12.f));
+        g.drawText (all.isEmpty() ? "Nothing scanned yet - try Rescan below"
+                                  : "No plugin matches that",
+                    getLocalBounds().reduced (16), juce::Justification::centred);
+    }
+}
+
+void PluginChooser::resized()
+{
+    auto b = getLocalBounds().reduced (10);
+    b.removeFromTop (22);
+    search.setBounds (b.removeFromTop (26));
+    b.removeFromTop (6);
+    rescanBtn.setBounds (b.removeFromBottom (22));
+    b.removeFromBottom (6);
+    list.setBounds (b);
+}
+
+void PluginChooser::refilter()
+{
+    const auto query = search.getText().trim();
+    filtered.clearQuick();
+    for (int i = 0; i < all.size(); ++i)
+    {
+        const auto& d = all.getReference (i);
+        if (query.isEmpty()
+            || d.name.containsIgnoreCase (query)
+            || d.manufacturerName.containsIgnoreCase (query))
+            filtered.add (i);
+    }
+    list.updateContent();
+    list.selectRow (filtered.isEmpty() ? -1 : 0);
+    repaint();
+}
+
+void PluginChooser::paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool selected)
+{
+    if (row < 0 || row >= filtered.size()) return;
+    const auto& d = all.getReference (filtered[row]);
+
+    if (selected)
+    {
+        g.setColour (ui::ink);
+        g.fillRect (0, 0, w, h);
+    }
+    g.setColour (selected ? ui::cream : ui::ink);
+    g.setFont (ui::sans (12.5f));
+    g.drawText (d.name, 8, 0, w - 110, h, juce::Justification::centredLeft, true);
+    g.setColour (selected ? ui::cream.withAlpha (0.65f) : ui::dim);
+    g.setFont (ui::sans (10.f));
+    g.drawText (d.manufacturerName, w - 100, 0, 92, h, juce::Justification::centredRight, true);
+}
+
+void PluginChooser::listBoxItemDoubleClicked (int row, const juce::MouseEvent&) { choose (row); }
+void PluginChooser::returnKeyPressed (int row) { choose (row); }
+void PluginChooser::textEditorTextChanged (juce::TextEditor&) { refilter(); }
+void PluginChooser::textEditorReturnKeyPressed (juce::TextEditor&) { choose (list.getSelectedRow()); }
+void PluginChooser::textEditorEscapeKeyPressed (juce::TextEditor&) { dismiss(); }
+
+// Up/down steer the list while the caret stays in the search box
+bool PluginChooser::keyPressed (const juce::KeyPress& kp, juce::Component*)
+{
+    const int code = kp.getKeyCode();
+    if (code != juce::KeyPress::upKey && code != juce::KeyPress::downKey) return false;
+    if (filtered.isEmpty()) return true;
+
+    const int row = juce::jlimit (0, filtered.size() - 1,
+                                  list.getSelectedRow() + (code == juce::KeyPress::downKey ? 1 : -1));
+    list.selectRow (row);
+    return true;
+}
+
+void PluginChooser::choose (int row)
+{
+    if (row < 0 || row >= filtered.size()) return;
+    auto desc = all.getReference (filtered[row]);
+    auto fn = pick;
+    dismiss();                       // the call-out owns us: copy first, then die
+    if (fn) fn (desc);
+}
+
+void PluginChooser::dismiss()
+{
+    if (auto* box = findParentComponentOfClass<juce::CallOutBox>())
+        box->dismiss();
+}
+
 // ============================================================ InsertPanel
 namespace
 {
@@ -1276,7 +1446,7 @@ InsertPanel::InsertPanel (EightyProcessor& p, std::function<void (const juce::St
 {
     addBtn.setWantsKeyboardFocus (false);
     addBtn.setTooltip ("Load a VST3 effect at the end of the chain (post-FX, pre volume)");
-    addBtn.onClick = [this] { showAddMenu (false); };
+    addBtn.onClick = [this] { showChooser (false); };
     addAndMakeVisible (addBtn);
 
     synthBtn.setWantsKeyboardFocus (false);
@@ -1286,7 +1456,7 @@ InsertPanel::InsertPanel (EightyProcessor& p, std::function<void (const juce::St
         if (auto* s = proc.getSynthLayer())
             openWindowFor (s);
         else
-            showAddMenu (true);
+            showChooser (true);
     };
     addAndMakeVisible (synthBtn);
 
@@ -1406,50 +1576,41 @@ void InsertPanel::resized()
     addBtn.setBounds (b.removeFromTop (rowH).reduced (1));
 }
 
-void InsertPanel::showAddMenu (bool instruments)
+void InsertPanel::showChooser (bool instruments)
 {
-    juce::PopupMenu m;
-    auto types = proc.knownPlugins.getTypes();
-    int id = 1;
-    for (auto& t : types)
-    {
-        ++id;
-        if (t.isInstrument != instruments || t.name == "Eighty") continue;
-        m.addItem (id - 1, t.name + "  (" + t.manufacturerName + ")");
-    }
-    if (types.isEmpty())
-        m.addItem (900001, "Scan VST3 folders...");
-    else
-    {
-        m.addSeparator();
-        m.addItem (900001, "Rescan VST3 folders...");
-    }
+    juce::Array<juce::PluginDescription> matching;
+    for (auto& t : proc.knownPlugins.getTypes())
+        if (t.isInstrument == instruments && t.name != "Eighty")
+            matching.add (t);
 
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (
-                         instruments ? synthBtn : addBtn),
-        [this, types, instruments] (int result)
-        {
-            if (result == 0) return;
-            if (result == 900001)
-            {
-                juce::MouseCursor::showWaitCursor();
-                proc.rescanPlugins();
-                juce::MouseCursor::hideWaitCursor();
-                showAddMenu (instruments);
-                return;
-            }
-            const int idx = result - 1;
-            if (idx >= 0 && idx < types.size())
-            {
-                juce::String error;
-                const bool ok = instruments
-                    ? proc.setSynthLayer (types.getReference (idx), error)
-                    : proc.addInsert (types.getReference (idx), error);
-                if (! ok)
-                    juce::AlertWindow::showMessageBoxAsync (
-                        juce::MessageBoxIconType::WarningIcon, "Couldn't load plugin", error);
-            }
-        });
+    auto load = [this, instruments] (const juce::PluginDescription& desc)
+    {
+        juce::String error;
+        const bool ok = instruments ? proc.setSynthLayer (desc, error)
+                                    : proc.addInsert (desc, error);
+        if (! ok)
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon, "Couldn't load plugin", error);
+    };
+
+    // Rescan is blocking, so close the call-out first and reopen it after
+    auto again = [safe = juce::Component::SafePointer<InsertPanel> (this), instruments]
+    {
+        if (safe == nullptr) return;
+        juce::MouseCursor::showWaitCursor();
+        safe->proc.rescanPlugins();
+        juce::MouseCursor::hideWaitCursor();
+        if (safe != nullptr) safe->showChooser (instruments);
+    };
+
+    auto content = std::make_unique<PluginChooser> (
+        std::move (matching),
+        instruments ? "SYNTH LAYER" : "VST3 EFFECT",
+        std::move (load),
+        [again] { juce::MessageManager::callAsync (again); });
+
+    auto& button = instruments ? synthBtn : addBtn;
+    juce::CallOutBox::launchAsynchronously (std::move (content), button.getScreenBounds(), nullptr);
 }
 
 void InsertPanel::openWindowFor (juce::AudioPluginInstance* inst)
@@ -1583,6 +1744,9 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     addAndMakeVisible (secOsc2);
 
     makeFader (secMix, ID::noiseLevel, "NOISE");
+    makeFader (secMix, ID::csSubLevel, "SUB");
+    makeChips (secMix, ID::csSubOct, { "-1", "-2" }, "OCT", 34);
+    makeChips (secMix, ID::csSubWave, { "SQR", "TRI" }, "WAVE", 34);
     makeKnob  (secMix, ID::pwmRate, "PWM RT");
     addAndMakeVisible (secMix);
 
@@ -1627,6 +1791,9 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     addAndMakeVisible (secVco2);
 
     makeFader (secJpMix, ID::jpMix, "MIX");
+    makeFader (secJpMix, ID::jpSubLevel, "SUB");
+    makeChips (secJpMix, ID::jpSubOct, { "-1", "-2" }, "OCT", 34);
+    makeChips (secJpMix, ID::jpSubWave, { "SQR", "TRI" }, "WAVE", 34);
     makeKnob  (secJpMix, ID::pwmRate, "PWM RT");
     addAndMakeVisible (secJpMix);
 
@@ -1721,6 +1888,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     addAndMakeVisible (secFx);
 
     buildSeqRow();
+    buildPresetBar();
 
     addAndMakeVisible (scope);
     addAndMakeVisible (lissajous);
@@ -1877,6 +2045,141 @@ LedToggle* EightyEditor::makeLed (Section& s, const juce::String& paramID, const
     return t;
 }
 
+// -------------------------------------------------------- preset bar
+void EightyEditor::buildPresetBar()
+{
+    presetPrevBtn.setWantsKeyboardFocus (false);
+    presetPrevBtn.setTooltip ("Previous preset in the folder");
+    presetPrevBtn.onClick = [this] { stepPreset (-1); };
+    addAndMakeVisible (presetPrevBtn);
+
+    presetNextBtn.setWantsKeyboardFocus (false);
+    presetNextBtn.setTooltip ("Next preset in the folder");
+    presetNextBtn.onClick = [this] { stepPreset (1); };
+    addAndMakeVisible (presetNextBtn);
+
+    presetNameBtn.setWantsKeyboardFocus (false);
+    presetNameBtn.setTooltip ("Click for the preset list. An asterisk means you have edited "
+                              "this preset since it was loaded");
+    presetNameBtn.onClick = [this] { showPresetMenu(); };
+    addAndMakeVisible (presetNameBtn);
+
+    presetSaveBtn.setWantsKeyboardFocus (false);
+    presetSaveBtn.setTooltip ("Snapshot everything - all parameters, the key map and the "
+                              "sequencer pattern - into a new preset file");
+    presetSaveBtn.onClick = [this] { promptSavePreset(); };
+    addAndMakeVisible (presetSaveBtn);
+
+    refreshPresetName();
+}
+
+void EightyEditor::refreshPresetName()
+{
+    auto name = proc.currentPresetName();
+    if (proc.isPresetEdited()) name << " *";
+    if (name == shownPresetName) return;
+    shownPresetName = name;
+    presetNameBtn.setButtonText (name);
+}
+
+void EightyEditor::applyPreset (const juce::File& file)
+{
+    juce::String error;
+    if (! proc.loadPreset (file, error))
+    {
+        juce::AlertWindow::showMessageBoxAsync (
+            juce::MessageBoxIconType::WarningIcon, "Couldn't load preset", error);
+        return;
+    }
+    refreshPresetName();
+    seqGrid.repaint();
+    readoutText = "PRESET . " + proc.currentPresetName().toUpperCase();
+    readoutUntil = juce::Time::getMillisecondCounter() + 2500;
+    repaint();
+}
+
+void EightyEditor::stepPreset (int dir)
+{
+    auto files = proc.presetFiles();
+    if (files.isEmpty())
+    {
+        readoutText = "NO PRESETS SAVED YET - HIT SAVE";
+        readoutUntil = juce::Time::getMillisecondCounter() + 2500;
+        return;
+    }
+
+    int index = -1;
+    for (int i = 0; i < files.size(); ++i)
+        if (files[i].getFileNameWithoutExtension() == proc.currentPresetName()) { index = i; break; }
+
+    // not in the folder (unsaved edit): step onto the first/last entry
+    index = index < 0 ? (dir > 0 ? 0 : files.size() - 1)
+                      : (index + dir + files.size()) % files.size();
+    applyPreset (files[index]);
+}
+
+void EightyEditor::showPresetMenu()
+{
+    auto files = proc.presetFiles();
+    juce::PopupMenu m;
+    m.setLookAndFeel (&lnf);
+    m.addSectionHeader ("Presets");
+    if (files.isEmpty())
+        m.addItem (-1, "(none saved yet)", false);
+    for (int i = 0; i < files.size(); ++i)
+        m.addItem (i + 1, files[i].getFileNameWithoutExtension(), true,
+                   files[i].getFileNameWithoutExtension() == proc.currentPresetName());
+    m.addSeparator();
+    m.addItem (9001, "Save as...");
+    m.addItem (9002, "Reveal folder in Finder");
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (presetNameBtn),
+        [this, files] (int result)
+        {
+            if (result == 9001) { promptSavePreset(); return; }
+            if (result == 9002)
+            {
+                auto folder = EightyProcessor::presetFolder();
+                folder.createDirectory();
+                folder.revealToUser();
+                return;
+            }
+            const int idx = result - 1;
+            if (idx >= 0 && idx < files.size())
+                applyPreset (files[idx]);
+        });
+}
+
+void EightyEditor::promptSavePreset()
+{
+    saveWindow = std::make_unique<juce::AlertWindow> (
+        "Save preset", "Every parameter, the key map and the sequencer pattern are stored.",
+        juce::MessageBoxIconType::NoIcon, this);
+    saveWindow->setLookAndFeel (&lnf);
+    saveWindow->addTextEditor ("name", proc.currentPresetName(), "Name:");
+    saveWindow->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    saveWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    saveWindow->enterModalState (true, juce::ModalCallbackFunction::create (
+        [this] (int result)
+        {
+            std::unique_ptr<juce::AlertWindow> window (std::move (saveWindow));
+            if (window != nullptr) window->setLookAndFeel (nullptr);
+            if (result != 1 || window == nullptr) return;
+
+            juce::String error;
+            if (! proc.savePreset (window->getTextEditorContents ("name"), error))
+            {
+                juce::AlertWindow::showMessageBoxAsync (
+                    juce::MessageBoxIconType::WarningIcon, "Couldn't save preset", error);
+                return;
+            }
+            refreshPresetName();
+            readoutText = "SAVED . " + proc.currentPresetName().toUpperCase();
+            readoutUntil = juce::Time::getMillisecondCounter() + 2500;
+        }), false);
+}
+
 LedToggle* EightyEditor::makeLooseLed (const juce::String& paramID, const juce::String& label)
 {
     auto* param = proc.apvts.getParameter (paramID);
@@ -1953,6 +2256,7 @@ void EightyEditor::buildSeqRow()
     {
         readoutText = s;
         readoutUntil = juce::Time::getMillisecondCounter() + 2500;
+        proc.markPresetEdited();
     };
     addAndMakeVisible (seqGrid);
 }
@@ -2137,6 +2441,7 @@ void EightyEditor::paramTouched (const juce::String& paramID)
         readoutText = p->getName (24).toUpperCase() + " . " + p->getCurrentValueAsText();
         readoutUntil = juce::Time::getMillisecondCounter() + 2500;
     }
+    proc.markPresetEdited();
 }
 
 // ------------------------------------------------------------ MIDI learn
@@ -2205,6 +2510,12 @@ void EightyEditor::paint (juce::Graphics& g)
         g.drawText ("TRACK A", 212, row0 + 1, 70, 10, juce::Justification::centredLeft);
         g.drawText ("TRACK B", 212, row1 + 1, 70, 10, juce::Justification::centredLeft);
     }
+
+    // preset bar caption
+    g.setColour (ui::dim);
+    g.setFont (ui::sans (8.5f, true));
+    g.drawText ("PRESET", 16 + PanelChips::totalW + 10, ui::tabY + 12, 46, 12,
+                juce::Justification::centredLeft);
 
     // LCD readout background
     g.setColour (ui::scopeBg);
@@ -2275,10 +2586,21 @@ void EightyEditor::resized()
     const int scopeX = hx + 6;
     scope.setBounds (scopeX, 7, lissX - 8 - scopeX, 42);
 
-    // ---- tab band
+    // ---- tab band: panel tabs, preset bar, LCD
     panelChips.setBounds (16, ui::tabY + 6, PanelChips::totalW, 26);
     const int lcdW = 480;
-    statusLabel.setBounds (lissX - 10 - lcdW + 14, ui::tabY + 6, lcdW - 28, 22);
+    const int lcdX = lissX - 10 - lcdW + 14;
+    statusLabel.setBounds (lcdX, ui::tabY + 6, lcdW - 28, 22);
+
+    {
+        int px = 16 + PanelChips::totalW + 56;          // clear of the tabs + caption
+        const int py = ui::tabY + 8, ph = 20;
+        presetPrevBtn.setBounds (px, py, 22, ph);       px += 25;
+        const int nameW = juce::jlimit (120, 260, lcdX - 14 - 60 - 25 - px);
+        presetNameBtn.setBounds (px, py, nameW, ph);    px += nameW + 3;
+        presetNextBtn.setBounds (px, py, 22, ph);       px += 28;
+        presetSaveBtn.setBounds (px, py, 52, ph);
+    }
 
     layoutRows();
 
@@ -2424,6 +2746,7 @@ void EightyEditor::timerCallback()
         zoneStrip->repaint();      // tracks keyboard scrolling and param changes
 
     tickAdjustRamp();
+    refreshPresetName();           // tracks host automation and preset loads
 
     if (proc.engine.seqPlay || proc.engine.seqRec)
         seqGrid.repaint();         // playhead / cursor

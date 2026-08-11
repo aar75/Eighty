@@ -179,6 +179,19 @@ public:
     juce::String getSynthLayerName() const;
     juce::AudioPluginInstance* getSynthLayer() const;
 
+    // ---- presets ----
+    // A preset is the synth itself: every parameter, the per-key engine map
+    // and the sequencer pattern. Deliberately *not* the MIDI-learn map (that
+    // belongs to your hardware, not the sound) or the hosted VST3 chain
+    // (reloading plugins on every preset switch would stall the UI).
+    static juce::File presetFolder();
+    juce::Array<juce::File> presetFiles() const;
+    bool savePreset (const juce::String& name, juce::String& error);
+    bool loadPreset (const juce::File&, juce::String& error);
+    juce::String currentPresetName() const { return presetName; }
+    void markPresetEdited() { presetDirty = true; }
+    bool isPresetEdited() const { return presetDirty; }
+
     // ---- per-key engine map (engine mode "Keys": 0 = CS, 1 = JP, 2 = both) ----
     uint8_t getKeyZone (int note) const
     { return keyZones[(size_t) juce::jlimit (0, 127, note)].load (std::memory_order_relaxed); }
@@ -191,6 +204,11 @@ public:
 private:
     void updateParameters();
     void handleMidiEvent (const juce::MidiMessage& m);
+
+    juce::ValueTree soundToValueTree();         // params + key map + pattern
+    void soundFromValueTree (const juce::ValueTree&);
+    juce::String presetName { "Init" };
+    bool presetDirty = false;
 
     juce::File pluginCacheFile() const;
     juce::File deadMansPedalFile() const;

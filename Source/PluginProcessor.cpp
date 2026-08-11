@@ -353,6 +353,13 @@ void EightyProcessor::updateParameters()
     }
     vp.noiseLevel   = rawVal (ID::noiseLevel);
 
+    vp.sub[modelCS80].level   = rawVal (ID::csSubLevel);
+    vp.sub[modelCS80].octaves = (int) rawVal (ID::csSubOct) + 1;   // chip 0/1 -> 1/2 octaves
+    vp.sub[modelCS80].wave    = (int) rawVal (ID::csSubWave);
+    vp.sub[modelJP8].level    = rawVal (ID::jpSubLevel);
+    vp.sub[modelJP8].octaves  = (int) rawVal (ID::jpSubOct) + 1;
+    vp.sub[modelJP8].wave     = (int) rawVal (ID::jpSubWave);
+
     vp.hpfCutoff    = rawVal (ID::hpfCutoff);
     vp.lpfCutoff    = rawVal (ID::lpfCutoff);
     vp.resonance    = rawVal (ID::resonance);
@@ -711,12 +718,15 @@ void EightyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     activeVoices.store (engine.activeVoiceCount());
 }
 
-void EightyProcessor::getStateInformation (juce::MemoryBlock& destData)
+// ------------------------------------------------------------- presets
+// The "sound": every parameter plus the two things the engine owns outside
+// the APVTS - the per-key engine map and the sequencer pattern.
+juce::ValueTree EightyProcessor::soundToValueTree()
 {
     auto state = apvts.copyState();
-    state.removeChild (state.getChildWithName ("midiMap"), nullptr);
-    state.appendChild (midiLearn.toValueTree(), nullptr);
-    state.removeChild (state.getChildWithName ("keyZones"), nullptr);
+    for (auto* name : { "midiMap", "keyZones", "seqPattern", "insertChain", "synthLayer" })
+        state.removeChild (state.getChildWithName (name), nullptr);
+
     {
         std::string zones (128, '0');
         for (int i = 0; i < 128; ++i)
@@ -725,7 +735,6 @@ void EightyProcessor::getStateInformation (juce::MemoryBlock& destData)
         kz.setProperty ("map", juce::String (zones), nullptr);
         state.appendChild (kz, nullptr);
     }
-    state.removeChild (state.getChildWithName ("seqPattern"), nullptr);
     {
         juce::ValueTree sp ("seqPattern");
         for (int t = 0; t < eighty::SynthEngine::StepSeq::kTracks; ++t)
@@ -736,6 +745,101 @@ void EightyProcessor::getStateInformation (juce::MemoryBlock& destData)
         }
         state.appendChild (sp, nullptr);
     }
+    return state;
+}
+
+void EightyProcessor::soundFromValueTree (const juce::ValueTree& tree)
+{
+    auto state = tree.createCopy();
+
+    auto kz = state.getChildWithName ("keyZones");
+    if (kz.isValid())
+    {
+        const auto zones = kz.getProperty ("map").toString();
+        for (int i = 0; i < 128 && i < zones.length(); ++i)
+            setKeyZone (i, (uint8_t) juce::jlimit (0, 2, (int) (zones[i] - '0')));
+    }
+    state.removeChild (kz, nullptr);
+
+    auto sp = state.getChildWithName ("seqPattern");
+    if (sp.isValid())
+    {
+        int i = 0;
+        for (auto tr : sp)
+        {
+            if (i >= eighty::SynthEngine::StepSeq::kTracks) break;
+            if (tr.hasType ("track"))
+                seqTrackFromString (tr.getProperty ("steps").toString(),
+                                    engine.seq.tracks[(size_t) i]);
+            ++i;
+        }
+    }
+    state.removeChild (sp, nullptr);
+
+    apvts.replaceState (state);
+}
+
+juce::File EightyProcessor::presetFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("Eighty").getChildFile ("Presets");
+}
+
+juce::Array<juce::File> EightyProcessor::presetFiles() const
+{
+    juce::Array<juce::File> files;
+    presetFolder().findChildFiles (files, juce::File::findFiles, false, "*.eighty");
+    files.sort();
+    return files;
+}
+
+bool EightyProcessor::savePreset (const juce::String& name, juce::String& error)
+{
+    const auto clean = juce::File::createLegalFileName (name.trim());
+    if (clean.isEmpty()) { error = "Please give the preset a name"; return false; }
+
+    auto folder = presetFolder();
+    const auto result = folder.createDirectory();
+    if (result.failed()) { error = result.getErrorMessage(); return false; }
+
+    juce::ValueTree root ("EightyPreset");
+    root.setProperty ("name", clean, nullptr);
+    root.setProperty ("version", 1, nullptr);
+    root.appendChild (soundToValueTree(), nullptr);
+
+    auto file = folder.getChildFile (clean + ".eighty");
+    auto xml = root.createXml();
+    if (xml == nullptr || ! xml->writeTo (file))
+    {
+        error = "Couldn't write " + file.getFullPathName();
+        return false;
+    }
+    presetName = clean;
+    presetDirty = false;
+    return true;
+}
+
+bool EightyProcessor::loadPreset (const juce::File& file, juce::String& error)
+{
+    auto xml = juce::parseXML (file);
+    if (xml == nullptr) { error = "Couldn't read " + file.getFileName(); return false; }
+
+    auto root = juce::ValueTree::fromXml (*xml);
+    auto sound = root.hasType ("EightyPreset") ? root.getChild (0) : root;
+    if (! sound.isValid()) { error = file.getFileName() + " is not an Eighty preset"; return false; }
+
+    engine.allNotesOff();
+    soundFromValueTree (sound);
+    presetName = file.getFileNameWithoutExtension();
+    presetDirty = false;
+    return true;
+}
+
+void EightyProcessor::getStateInformation (juce::MemoryBlock& destData)
+{
+    auto state = soundToValueTree();
+    state.setProperty ("presetName", presetName, nullptr);
+    state.appendChild (midiLearn.toValueTree(), nullptr);
     state.removeChild (state.getChildWithName ("insertChain"), nullptr);
     state.appendChild (chainToValueTree(), nullptr);
     state.removeChild (state.getChildWithName ("synthLayer"), nullptr);
@@ -758,35 +862,15 @@ void EightyProcessor::setStateInformation (const void* data, int sizeInBytes)
         midiLearn.fromValueTree (state.getChildWithName ("midiMap"));
         state.removeChild (state.getChildWithName ("midiMap"), nullptr);
 
-        auto kz = state.getChildWithName ("keyZones");
-        if (kz.isValid())
-        {
-            const auto zones = kz.getProperty ("map").toString();
-            for (int i = 0; i < 128 && i < zones.length(); ++i)
-                setKeyZone (i, (uint8_t) juce::jlimit (0, 2, (int) (zones[i] - '0')));
-        }
-        state.removeChild (kz, nullptr);
-
-        auto sp = state.getChildWithName ("seqPattern");
-        if (sp.isValid())
-        {
-            int i = 0;
-            for (auto tr : sp)
-            {
-                if (i >= eighty::SynthEngine::StepSeq::kTracks) break;
-                if (tr.hasType ("track"))
-                    seqTrackFromString (tr.getProperty ("steps").toString(),
-                                        engine.seq.tracks[(size_t) i]);
-                ++i;
-            }
-        }
-        state.removeChild (sp, nullptr);
+        if (state.hasProperty ("presetName"))
+            presetName = state.getProperty ("presetName").toString();
+        presetDirty = false;
 
         auto chain = state.getChildWithName ("insertChain");
         state.removeChild (chain, nullptr);
         auto synth = state.getChildWithName ("synthLayer");
         state.removeChild (synth, nullptr);
-        apvts.replaceState (state);
+        soundFromValueTree (state);
 
         // plugin instantiation must happen on the message thread
         juce::MessageManager::callAsync (

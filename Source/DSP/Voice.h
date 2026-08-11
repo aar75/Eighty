@@ -24,6 +24,16 @@ struct VoiceParams
     OscChannel osc[2];
     float noiseLevel = 0.f;
 
+    // Sub-oscillator, one config per engine (indexed by VoiceModel). Tracks
+    // the engine's first oscillator, one or two octaves down.
+    struct SubCfg
+    {
+        float level = 0.f;
+        int   octaves = 1;         // 1 or 2 octaves below
+        int   wave = 0;            // 0 square, 1 triangle
+    };
+    SubCfg sub[2];
+
     float hpfCutoff = 20.f, lpfCutoff = 9000.f, resonance = 0.15f;
     float filterEnvAmt = 0.f, keyTrack = 0.5f, filterDrive = 0.2f;
 
@@ -111,10 +121,17 @@ public:
         cardSide      = (voiceIndex % 2 == 0) ? -1.f : 1.f;
     }
 
+    // owner: who triggered this voice - kOwnerLive for the keyboard, or a
+    // sequencer track index. The engine only ever releases voices belonging
+    // to the same owner, so a sequencer step ending cannot cut off a live
+    // note you happen to be holding at the same pitch.
+    static constexpr int kOwnerLive = -1;
+
     void noteOn (int midiNote, float vel, float detuneCents, float panOffset,
                  float glideFromNote, bool retrigger, float gainScale = 1.f,
-                 int voiceModel = modelCS80)
+                 int voiceModel = modelCS80, int voiceOwner = kOwnerLive)
     {
+        owner = voiceOwner;
         note = midiNote;
         velocity = vel;
         unisonDetune = detuneCents;
@@ -154,6 +171,7 @@ public:
             {
                 vco[0].reset (0.f);
                 vco[1].reset (0.37f); // free-running feel: channels never phase-locked
+                subVco.reset (0.11f);
                 filter.reset();
                 jpFilter.reset();
             }
@@ -183,6 +201,7 @@ public:
     bool isReleasing() const     { return aEnv.isReleasing(); }
     int  currentNote() const     { return note; }
     int  currentModel() const    { return model; }
+    int  currentOwner() const    { return owner; }
     float envLevel() const       { return aEnv.value(); }
     uint32_t age() const         { return serial; }
     void setPolyPressure (float p) { polyPressure = p; }
@@ -218,6 +237,7 @@ public:
                     x += s0 * sawG[0] + p0 * pulseG[0];
                     x += s1 * sawG[1] + p1 * pulseG[1];
                     x += noise.tick() * noiseG * 0.7f;
+                    x += tickSub();
 
                     x = filter.process (x);
                 }
@@ -244,6 +264,7 @@ public:
                     lastVco2 = o2;
 
                     x = (o1 * jpMixA + o2 * jpMixB) * 1.2f;
+                    x += tickSub();
                     x = jpFilter.process (x);
                 }
 
@@ -263,6 +284,18 @@ public:
 private:
     static float clampf (float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+    // Sub-oscillator: square (from the pulse output at 50%) or triangle,
+    // an octave or two under the engine's first oscillator. Skipped entirely
+    // when the level is down so it costs nothing in patches that don't use it.
+    float tickSub()
+    {
+        if (subG <= 0.0001f) return 0.f;
+        float saw, pulse;
+        subVco.tick (0.5f, saw, pulse);
+        const float w = subWave == 1 ? subVco.triangle() : pulse;
+        return w * subG * 0.8f;
+    }
+
     // One-pole toward a target, run once per control block (every kCtrl
     // samples). This is what keeps a parameter *change* - dragging a fader
     // or arrow-keying it - from arriving as an audible step: the block-rate
@@ -271,6 +304,17 @@ private:
     {
         if (smoothInit) cur = target;
         else            cur += (target - cur) * coef;
+    }
+
+    // oscSemis: the pitch of the engine's first oscillator, so the sub
+    // follows the patch's octave rather than the raw note.
+    void updateSub (const VoiceParams& P, float oscSemis, float smCoef)
+    {
+        const auto& S = P.sub[model == modelJP8 ? 1 : 0];
+        subWave = S.wave;
+        smoothTo (subG, S.level, smCoef);
+        const float semis = oscSemis - 12.f * (float) (S.octaves < 2 ? 1 : 2);
+        subVco.setFrequency (440.f * std::exp2 ((semis - 69.f) / 12.f), sr);
     }
 
     void updateControl (const VoiceParams& P, float lfoVal)
@@ -324,6 +368,7 @@ private:
                 smoothTo (pulseG[c], O.on ? O.pulse * O.level : 0.f, smCoef);
             }
             smoothTo (noiseG, P.noiseLevel, smCoef);
+            updateSub (P, baseSemis + P.osc[0].footSemis + P.osc[0].fine * 0.01f, smCoef);
         }
         else
         {
@@ -338,6 +383,7 @@ private:
             smoothTo (pwmDepth[0], J.pwmDepth, smCoef);
             smoothTo (jpMixA, 1.f - J.mix, smCoef);
             smoothTo (jpMixB, J.mix, smCoef);
+            updateSub (P, s1, smCoef);
         }
 
         // --- Filter cutoff modulation (octave domain). Only the *parameter*
@@ -386,7 +432,7 @@ private:
     }
 
     const VoiceParams* params = nullptr;
-    VCO vco[2];
+    VCO vco[2], subVco;
     Noise noise;
     CS80Filter filter;
     JP8Filter jpFilter;
@@ -395,6 +441,7 @@ private:
     float sr = 44100.f;
     int note = -1;
     int model = modelCS80;
+    int owner = kOwnerLive;
     float lastVco2 = 0.f;
     float vcoHz[2] = { 440.f, 440.f };
     float velocity = 1.f;
@@ -414,6 +461,8 @@ private:
     float pwEff[2] = { 0.5f, 0.5f }, pwmDepth[2] = { 0.f, 0.f };
     float sawG[2] = { 0.f, 0.f }, pulseG[2] = { 0.f, 0.f }, noiseG = 0.f;
     float jpMixA = 0.5f, jpMixB = 0.5f;
+    float subG = 0.f;
+    int   subWave = 0;
     float lpOct = 13.f, hpOct = 4.32f, resSm = 0.15f, driveSm = 0.2f;
     float ampScale = 1.f, panPos = 0.f, panL = 0.707f, panR = 0.707f;
 
