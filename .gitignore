@@ -3,6 +3,12 @@ build/
 *.o
 *.a
 
+# Distribution bundles: built binaries plus their zips, rebuilt from
+# build/Eighty_artefacts/Release whenever there is something to share.
+# Deliberately untracked - no binary has ever been committed here, and this
+# repo is public.
+share_out/
+
 # macOS
 .DS_Store
 
