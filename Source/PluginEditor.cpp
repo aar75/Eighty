@@ -388,61 +388,86 @@ ScaleFit analyseScale (const int (&weights)[12], int strongestPc, int lowestPc)
 } // namespace
 
 // ============================================================ LookAndFeel
-CreamLNF::CreamLNF()
+EightyLNF::EightyLNF()
 {
     setColour (juce::ResizableWindow::backgroundColourId, ui::winBg);
     setColour (juce::Label::textColourId, ui::ink);
     setColour (juce::PopupMenu::backgroundColourId, ui::cardBg);
     setColour (juce::PopupMenu::textColourId, ui::ink);
-    setColour (juce::PopupMenu::highlightedBackgroundColourId, ui::ink);
-    setColour (juce::PopupMenu::highlightedTextColourId, ui::cream);
-    setColour (juce::TooltipWindow::backgroundColourId, ui::ink);
-    setColour (juce::TooltipWindow::textColourId, ui::cream);
-    setColour (juce::TooltipWindow::outlineColourId, ui::ink);
-    setColour (juce::TextButton::buttonColourId, ui::cardBg);
-    setColour (juce::TextButton::textColourOffId, ui::ink);
-    setColour (juce::TextButton::textColourOnId, ui::cream);
-    setColour (juce::TextButton::buttonOnColourId, ui::ink);
+    setColour (juce::PopupMenu::highlightedBackgroundColourId, ui::ctrlLine);
+    setColour (juce::PopupMenu::highlightedTextColourId, ui::textHi);
+    setColour (juce::TooltipWindow::backgroundColourId, ui::scopeBg);
+    setColour (juce::TooltipWindow::textColourId, ui::ink);
+    setColour (juce::TooltipWindow::outlineColourId, ui::line);
+    setColour (juce::TextButton::buttonColourId, ui::ctrlBg);
+    setColour (juce::TextButton::textColourOffId, ui::inkSoft);
+    setColour (juce::TextButton::textColourOnId, ui::textHi);
+    setColour (juce::TextButton::buttonOnColourId, ui::ctrlLine);
     setColour (juce::AlertWindow::backgroundColourId, ui::cardBg);
     setColour (juce::AlertWindow::textColourId, ui::ink);
-    setColour (juce::MidiKeyboardComponent::whiteNoteColourId, juce::Colour (0xfffdfaf3));
-    setColour (juce::MidiKeyboardComponent::blackNoteColourId, juce::Colour (0xff26221c));
+    // Keys stay light against the dark chassis - a dark-on-dark keyboard is
+    // unplayable, and the mockup keeps them bright too.
+    setColour (juce::MidiKeyboardComponent::whiteNoteColourId, juce::Colour (0xffcdd5e3));
+    setColour (juce::MidiKeyboardComponent::blackNoteColourId, juce::Colour (0xff2b3444));
     setColour (juce::MidiKeyboardComponent::keyDownOverlayColourId, ui::keyDown);
     setColour (juce::MidiKeyboardComponent::mouseOverKeyOverlayColourId, ui::keyDown.withAlpha (0.45f));
-    setColour (juce::MidiKeyboardComponent::keySeparatorLineColourId, juce::Colour (0xffd5ccba));
+    setColour (juce::MidiKeyboardComponent::keySeparatorLineColourId, juce::Colour (0xff232b3b));
     setColour (juce::MidiKeyboardComponent::shadowColourId, juce::Colours::transparentBlack);
 }
 
-void CreamLNF::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h,
+void EightyLNF::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h,
                                  float pos, float minSliderPos, float maxSliderPos,
                                  juce::Slider::SliderStyle, juce::Slider& slider)
 {
     const float cx = (float) x + (float) w * 0.5f;
-    // track
-    g.setColour (ui::track);
-    g.fillRoundedRectangle (cx - 2.f, (float) y, 4.f, (float) h, 2.f);
+    const float trackW = 7.f;
+    auto accent = slider.findColour (juce::Slider::trackColourId);
+    if (accent.isTransparent()) accent = ui::scopeTrace;
 
-    // Zero tick for bipolar faders (e.g. Filter Env, Fine tune) - marks
-    // where "off"/centred actually is, since the bottom of the fader is
-    // the minimum (often negative), not zero.
-    if (slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0)
+    // recessed groove
+    g.setColour (ui::groove);
+    g.fillRoundedRectangle (cx - trackW * 0.5f, (float) y, trackW, (float) h, 3.5f);
+    g.setColour (ui::ctrlLine);
+    g.drawRoundedRectangle (cx - trackW * 0.5f + 0.5f, (float) y + 0.5f,
+                            trackW - 1.f, (float) h - 1.f, 3.f, 1.f);
+
+    // Accent fill from the fader's "home" up to the cap: from the bottom for
+    // a unipolar control, from the centre for a bipolar one, so a negative
+    // Filter Env reads as a bar hanging *below* zero rather than a nearly
+    // empty track.
+    const bool bipolar = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0;
+    const float zeroY = bipolar
+        ? minSliderPos + (float) slider.valueToProportionOfLength (0.0) * (maxSliderPos - minSliderPos)
+        : (float) (y + h);
     {
-        const float zeroY = minSliderPos + (float) slider.valueToProportionOfLength (0.0)
-                                          * (maxSliderPos - minSliderPos);
-        g.setColour (ui::inkSoft);
-        g.fillRect (cx - 7.f, zeroY - 0.75f, 14.f, 1.5f);
+        const float top = juce::jmin (zeroY, pos), bot = juce::jmax (zeroY, pos);
+        g.setColour (accent.withAlpha (0.8f));
+        g.fillRoundedRectangle (cx - trackW * 0.5f + 1.f, top,
+                                trackW - 2.f, juce::jmax (1.f, bot - top), 2.5f);
     }
 
-    // cap with bg-colored center stripe
-    const float capW = 22.f, capH = 12.f;
+    // Zero tick for bipolar faders - marks where "off"/centred actually is,
+    // since the bottom of the fader is the minimum, not zero.
+    if (bipolar)
+    {
+        g.setColour (ui::dim.withAlpha (0.8f));
+        g.fillRect (cx - 7.f, zeroY - 0.5f, 14.f, 1.f);
+    }
+
+    // cap: light slate with an accent line across it
+    const float capW = 22.f, capH = 13.f;
     const float cy = juce::jlimit ((float) y, (float) (y + h) - capH, pos - capH * 0.5f);
-    g.setColour (ui::ink);
-    g.fillRoundedRectangle (cx - capW * 0.5f, cy, capW, capH, 2.f);
-    g.setColour (ui::winBg);
-    g.fillRect (cx - capW * 0.5f, cy + capH * 0.5f - 1.f, capW, 2.f);
+    auto cap = juce::Rectangle<float> (cx - capW * 0.5f, cy, capW, capH);
+    g.setGradientFill (juce::ColourGradient (ui::thumbHi, cap.getX(), cap.getY(),
+                                             ui::thumbLo, cap.getX(), cap.getBottom(), false));
+    g.fillRoundedRectangle (cap, 3.f);
+    g.setColour (ui::thumbEdge);
+    g.drawRoundedRectangle (cap.reduced (0.5f), 3.f, 1.f);
+    g.setColour (accent);
+    g.fillRect (cap.getCentreX() - 7.f, cap.getCentreY() - 1.f, 14.f, 2.f);
 }
 
-void CreamLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
+void EightyLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
                                  float pos, float startAngle, float endAngle,
                                  juce::Slider& slider)
 {
@@ -450,51 +475,66 @@ void CreamLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
     const float size = juce::jmin (bounds.getWidth(), bounds.getHeight());
     auto sq = bounds.withSizeKeepingCentre (size, size);
     const auto c = sq.getCentre();
-    const float r = size * 0.5f - 1.5f;
+    // Face and arc are sized as fractions of the knob, not by fixed insets,
+    // so the 28 px header knobs show the same clear ring as the 48 px
+    // section knobs instead of hiding the arc under their own face.
+    const float r = size * 0.44f;
     const float angle = startAngle + pos * (endAngle - startAngle);
+    auto accent = slider.findColour (juce::Slider::trackColourId);
+    if (accent.isTransparent()) accent = ui::scopeTrace;
 
-    // value arc: amber up to the value, track colour for the rest
+    // value arc: accent up to the value, groove colour for the rest
     if (endAngle - angle > 0.01f)
     {
         juce::Path rest;
         rest.addCentredArc (c.x, c.y, r, r, 0.f, angle, endAngle, true);
-        g.setColour (ui::track);
-        g.strokePath (rest, juce::PathStrokeType (3.f));
+        g.setColour (ui::groove);
+        g.strokePath (rest, juce::PathStrokeType (3.f, juce::PathStrokeType::curved,
+                                                  juce::PathStrokeType::rounded));
     }
     if (angle - startAngle > 0.01f)
     {
         juce::Path arc;
         arc.addCentredArc (c.x, c.y, r, r, 0.f, startAngle, angle, true);
-        g.setColour (ui::scopeTrace);
-        g.strokePath (arc, juce::PathStrokeType (3.f));
+        // faint bloom behind the arc, so the value reads at a glance
+        g.setColour (accent.withAlpha (0.22f));
+        g.strokePath (arc, juce::PathStrokeType (6.f, juce::PathStrokeType::curved,
+                                                 juce::PathStrokeType::rounded));
+        g.setColour (accent);
+        g.strokePath (arc, juce::PathStrokeType (3.f, juce::PathStrokeType::curved,
+                                                 juce::PathStrokeType::rounded));
     }
 
-    auto face = sq.reduced (3.f);
+    auto face = sq.reduced (size * 0.166f);
     auto faceCol = slider.findColour (juce::Slider::rotarySliderFillColourId);
-    g.setColour (faceCol.isTransparent() ? ui::cardBg : faceCol);
+    g.setColour (faceCol.isTransparent() ? ui::knobFace : faceCol);
     g.fillEllipse (face);
-    g.setColour (ui::line);
-    g.drawEllipse (face.reduced (0.5f), 1.f);
+    g.setColour (ui::knobRim);
+    g.drawEllipse (face.reduced (0.75f), 1.5f);
 
     juce::Path p;
-    p.addRectangle (-1.f, -size * 0.5f + size * 0.18f, 2.f, size * 0.32f);
+    p.addRoundedRectangle (-1.5f, -size * 0.5f + size * 0.17f, 3.f, size * 0.33f, 1.5f);
     p.applyTransform (juce::AffineTransform::rotation (angle).translated (c.x, c.y));
     g.setColour (ui::ink);
     g.fillPath (p);
+
+    g.setColour (ui::knobHub);
+    g.fillEllipse (juce::Rectangle<float> (size * 0.26f, size * 0.26f).withCentre (c));
 }
 
-void CreamLNF::drawButtonBackground (juce::Graphics& g, juce::Button& b,
+void EightyLNF::drawButtonBackground (juce::Graphics& g, juce::Button& b,
                                      const juce::Colour&, bool over, bool down)
 {
     auto r = b.getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (down || b.getToggleState() ? ui::ink : ui::cardBg);
-    g.fillRoundedRectangle (r, 3.f);
-    g.setColour (over ? ui::ink : ui::track);
-    g.drawRoundedRectangle (r, 3.f, 1.f);
+    const bool active = down || b.getToggleState();
+    g.setColour (active ? ui::ctrlLine : (over ? ui::ctrlBg.brighter (0.12f) : ui::ctrlBg));
+    g.fillRoundedRectangle (r, 4.f);
+    g.setColour (active || over ? ui::knobRim : ui::ctrlLine);
+    g.drawRoundedRectangle (r, 4.f, 1.f);
 }
 
-juce::Font CreamLNF::getTextButtonFont (juce::TextButton&, int) { return ui::mono (10.f); }
-juce::Font CreamLNF::getPopupMenuFont() { return ui::sans (13.f); }
+juce::Font EightyLNF::getTextButtonFont (juce::TextButton&, int) { return ui::mono (10.f); }
+juce::Font EightyLNF::getPopupMenuFont() { return ui::sans (13.f); }
 
 // ========================================================== fader / knob
 VFader::VFader (const juce::String& text)
@@ -510,9 +550,18 @@ VFader::VFader (const juce::String& text)
     addAndMakeVisible (label);
     value.setJustificationType (juce::Justification::centred);
     value.setFont (ui::mono (8.5f));
-    value.setColour (juce::Label::textColourId, ui::dim);
+    value.setColour (juce::Label::textColourId, ui::scopeTrace);
     value.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (value);
+}
+
+void VFader::paint (juce::Graphics& g)
+{
+    auto box = value.getBounds().toFloat().reduced (0.5f, 0.5f);
+    g.setColour (ui::scopeBg);
+    g.fillRoundedRectangle (box, 2.5f);
+    g.setColour (ui::track);
+    g.drawRoundedRectangle (box, 2.5f, 1.f);
 }
 
 void VFader::resized()
@@ -533,20 +582,28 @@ MiniKnob::MiniKnob (const juce::String& text, bool headerStyle) : header (header
     slider.setWantsKeyboardFocus (false);
     slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f,
                                 juce::MathConstants<float>::pi * 2.75f, true);
-    slider.setColour (juce::Slider::rotarySliderFillColourId,
-                      header ? ui::winBg : ui::cardBg);
+    slider.setColour (juce::Slider::rotarySliderFillColourId, ui::knobFace);
     addAndMakeVisible (slider);
     label.setText (text, juce::dontSendNotification);
     label.setJustificationType (juce::Justification::centred);
     label.setFont (ui::sans (header ? 8.5f : 10.f, true));
-    label.setColour (juce::Label::textColourId, header ? ui::dim : ui::mid);
+    label.setColour (juce::Label::textColourId, header ? ui::inkSoft : ui::mid);
     label.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (label);
     value.setJustificationType (juce::Justification::centred);
     value.setFont (ui::mono (header ? 9.f : 8.5f));
-    value.setColour (juce::Label::textColourId, header ? ui::ink : ui::dim);
+    value.setColour (juce::Label::textColourId, ui::scopeTrace);
     value.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (value);
+}
+
+void MiniKnob::paint (juce::Graphics& g)
+{
+    auto box = value.getBounds().toFloat().reduced (header ? 1.f : 3.f, 0.5f);
+    g.setColour (ui::scopeBg);
+    g.fillRoundedRectangle (box, 2.5f);
+    g.setColour (ui::track);
+    g.drawRoundedRectangle (box, 2.5f, 1.f);
 }
 
 void MiniKnob::resized()
@@ -585,37 +642,42 @@ void ChipStack::paint (juce::Graphics& g)
     const int n = labels.size();
     if (n == 0) return;
 
+    // A selected chip is an accent-tinted panel with an accent border and
+    // bright text, rather than a solid accent block: at this size a solid
+    // fill of a saturated colour swamps the label.
+    auto drawChip = [&g] (juce::Rectangle<float> r, const juce::String& text,
+                          bool on, juce::Colour accent, float fontSize, float corner)
+    {
+        g.setColour (on ? accent.withAlpha (0.28f) : ui::chipOff);
+        g.fillRoundedRectangle (r, corner);
+        g.setColour (on ? accent : ui::track);
+        g.drawRoundedRectangle (r, corner, 1.f);
+        g.setColour (on ? ui::textHi : ui::dim);
+        g.setFont (ui::sans (fontSize, true));
+        g.drawText (text, r, juce::Justification::centred);
+    };
+
     if (horiz)
     {
         for (int i = 0; i < n; ++i)
         {
-            auto r = juce::Rectangle<int> (i * cellW, 0, cellW + 1, getHeight()).toFloat().reduced (0.5f);
-            const bool on = i == selected;
-            // JP-8 chip gets the JP accent when active
-            auto fill = labels[i].contains ("JP") ? ui::jpAccent : onCol;
-            if (on) { g.setColour (fill); g.fillRect (r); }
-            g.setColour (on ? fill : ui::track);
-            g.drawRect (r, 1.f);
-            g.setColour (on ? ui::cream : ui::dim);
-            g.setFont (ui::sans (cellW < 40 ? 9.f : 10.f, true));
-            g.drawText (labels[i], r, juce::Justification::centred);
+            auto r = juce::Rectangle<int> (i * cellW, 0, cellW, getHeight()).toFloat().reduced (1.f, 0.5f);
+            // engine-named chips carry their engine's identity colour
+            auto fill = labels[i].contains ("JP") ? ui::jpAccent
+                      : labels[i].contains ("CS") ? ui::stOsc : onCol;
+            drawChip (r, labels[i], i == selected, fill, cellW < 40 ? 9.f : 10.f, 3.5f);
         }
         return;
     }
 
-    // vertical: chips joined (-1px overlap), caption at the bottom
+    // vertical: chip stack, caption at the bottom
     const int ch = chipH();
     const int top = getHeight() - 14 - (n * (ch - 1) + 1);
     for (int i = 0; i < n; ++i)
     {
-        auto r = juce::Rectangle<int> (0, top + i * (ch - 1), getWidth(), ch).toFloat().reduced (0.5f);
-        const bool on = i == selected;
-        if (on) { g.setColour (onCol); g.fillRect (r); }
-        g.setColour (on ? onCol : ui::track);
-        g.drawRect (r, 1.f);
-        g.setColour (on ? ui::winBg : ui::dim);
-        g.setFont (ui::sans (9.5f, true));
-        g.drawText (labels[i], r, juce::Justification::centred);
+        auto r = juce::Rectangle<int> (0, top + i * (ch - 1), getWidth(), ch)
+                     .toFloat().reduced (0.5f, 1.f);
+        drawChip (r, labels[i], i == selected, onCol, 9.5f, 2.5f);
     }
     g.setColour (ui::dim);
     g.setFont (ui::sans (9.f, true));
@@ -656,23 +718,36 @@ LedToggle::LedToggle (juce::RangedAudioParameter& p, const juce::String& t)
 
 int LedToggle::preferredWidth() const
 {
-    return 12 + (int) ui::sans (9.5f, true).getStringWidthFloat (text);
+    // lens + gap + text + the pill's own padding, with a pixel of slack so
+    // the label never ellipsises against its own box. Single-letter pills
+    // (the mixer's M/S) drop the trailing padding - three strips of them
+    // have to fit inside one 58 px mixer column.
+    const int textW = (int) std::ceil (ui::sans (9.5f, true).getStringWidthFloat (text));
+    return (text.length() <= 1 ? 17 : 21) + textW;
 }
 
 void LedToggle::paint (juce::Graphics& g)
 {
     auto b = getLocalBounds();
-    auto led = juce::Rectangle<float> (0.f, (float) b.getCentreY() - 3.5f, 7.f, 7.f);
+    auto pill = b.toFloat().reduced (0.5f);
+    g.setColour (on ? ui::ledOn.withAlpha (0.16f) : ui::ctrlBg);
+    g.fillRoundedRectangle (pill, 3.5f);
+    g.setColour (on ? ui::ledOn.withAlpha (0.7f) : ui::track);
+    g.drawRoundedRectangle (pill, 3.5f, 1.f);
+
+    auto led = juce::Rectangle<float> (4.f, (float) b.getCentreY() - 3.5f, 7.f, 7.f);
+    if (on)   // glow ring under the lens
+    {
+        g.setColour (ui::ledOn.withAlpha (0.3f));
+        g.fillEllipse (led.expanded (3.f));
+    }
     g.setColour (on ? ui::ledOn : ui::ledOff);
     g.fillEllipse (led);
-    if (on)
-    {
-        g.setColour (ui::ledOn.withAlpha (0.4f));
-        g.drawEllipse (led.expanded (2.f), 2.f);
-    }
-    g.setColour (on ? ui::ink : ui::dim);
+
+    g.setColour (on ? ui::textHi : ui::inkSoft);
     g.setFont (ui::sans (9.5f, true));
-    g.drawText (text, b.withTrimmedLeft (11), juce::Justification::centredLeft);
+    g.drawText (text, b.withTrimmedLeft (14).withTrimmedRight (3),
+                juce::Justification::centredLeft);
 }
 
 void LedToggle::mouseDown (const juce::MouseEvent& e)
@@ -690,7 +765,15 @@ void LedToggle::mouseDown (const juce::MouseEvent& e)
 MiniDisplay::MiniDisplay (Kind k, std::vector<juce::RangedAudioParameter*> p)
     : kind (k), params (std::move (p))
 {
-    setInterceptsMouseClicks (false, false);
+    // hover for the tooltip, but never swallow a click
+    setInterceptsMouseClicks (true, false);
+    setTooltip (kind == filterKind
+        ? "Filter response: level against frequency, 20 Hz to 18 kHz on a log axis, "
+          "with the resonance peak at each corner"
+        : kind == adsrKind
+        ? "Envelope shape. Segment widths are the real times, compressed so a long "
+          "release still leaves the attack visible"
+        : "LFO shape - two cycles of the selected waveform");
     cache.assign (params.size(), -1.f);
     startTimerHz (10);
 }
@@ -706,74 +789,149 @@ void MiniDisplay::timerCallback()
     if (changed) repaint();
 }
 
+float MiniDisplay::value (size_t i, float fallback) const
+{
+    if (i >= params.size() || params[i] == nullptr) return fallback;
+    return params[i]->convertFrom0to1 (params[i]->getValue());
+}
+
+// One-pole-per-slope magnitude model: a 4-pole low pass, a 4-pole high pass
+// and a resonant bump at each corner. Not either real filter's transfer
+// function - it is a picture of the shape they make, which is what a
+// 24-pixel-tall display can honestly show.
+float MiniDisplay::filterMagDb (float f, float lpHz, float hpHz, float q, float qHp)
+{
+    auto pole4 = [] (float ratio)
+    { return 10.f * std::log10 (1.f / (1.f + std::pow (ratio, 4.f))); };
+
+    float db = pole4 (f / juce::jmax (1.f, lpHz)) + pole4 (juce::jmax (1.f, hpHz) / f);
+    auto bump = [f] (float corner, float amount, float gain)
+    {
+        const float l = std::log (f / juce::jmax (1.f, corner));
+        return amount * gain * std::exp (-l * l * 5.f);
+    };
+    db += bump (lpHz, q, 16.f);
+    if (qHp > 0.f) db += bump (hpHz, qHp, 14.f);
+    return db;
+}
+
 void MiniDisplay::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds().toFloat();
     g.setColour (ui::scopeBg);
     g.fillRoundedRectangle (r, 3.f);
+    g.setColour (ui::track);
+    g.drawRoundedRectangle (r.reduced (0.5f), 3.f, 1.f);
 
-    auto norm = [this] (size_t i)
-    { return i < params.size() && params[i] != nullptr ? params[i]->getValue() : 0.f; };
+    // Everything below is laid out in a 100 x 28 space and scaled to fit, so
+    // one set of numbers describes every display size.
+    constexpr float W = 100.f, H = 28.f;
+    juce::Path p, grid;
 
-    // paths are built in the mockup's 100x28 space, then scaled to fit
-    juce::Path p;
     if (kind == filterKind)
     {
-        const float lp = norm (0), res = norm (1);
-        const float lx = 14.f + lp * 70.f;
-        p.startNewSubPath (4.f, 23.f);
-        p.lineTo (11.f, 11.f);
-        p.lineTo (lx - 8.f, 11.f);
-        p.quadraticTo (lx, 11.f - res * 16.f, lx + 3.f, 15.f);
-        p.lineTo (lx + 10.f, 26.f);
+        // hpf, lpf, res [, hpfRes] - swept over 20 Hz .. 18 kHz, log x
+        const float hp = value (0, 20.f), lp = value (1, 18000.f);
+        const float q = value (2), qHp = value (3);
+        constexpr float loHz = 20.f, decades = 900.f;   // 20 Hz -> 18 kHz
+        constexpr float topDb = 14.f, spanDb = 46.f;
+        auto toY = [] (float db) { return (topDb - db) / spanDb * (H - 4.f) + 2.f; };
+
+        grid.startNewSubPath (0.f, toY (0.f));
+        grid.lineTo (W, toY (0.f));
+
+        for (int i = 0; i <= 60; ++i)
+        {
+            const float x = (float) i / 60.f;
+            const float f = loHz * std::pow (decades, x);
+            const float db = juce::jlimit (-32.f, topDb, filterMagDb (f, lp, hp, q, qHp));
+            const float py = toY (db);
+            if (i == 0) p.startNewSubPath (0.f, py);
+            else        p.lineTo (x * W, py);
+        }
     }
     else if (kind == adsrKind)
     {
-        const float a = norm (0), d = norm (1), s = norm (2), rl = norm (3);
-        const float x1 = 9.f + a * 22.f;
-        const float x2 = x1 + 5.f + d * 24.f;
-        const float ys = 4.f + (1.f - s) * 20.f;
-        p.startNewSubPath (4.f, 25.f);
-        p.lineTo (x1, 4.f);
-        p.lineTo (x2, ys);
-        p.lineTo (72.f, ys);
-        p.lineTo (74.f + rl * 22.f, 25.f);
+        // a, d, s, r [, initial level, attack level], times in seconds.
+        // Segment widths are the real times raised to 0.4 so a 10 s release
+        // does not squash the attack into a single pixel.
+        auto tw = [this] (size_t i)
+        { return 0.06f + std::pow (juce::jlimit (0.f, 1.f, value (i) / 10.f), 0.4f) * 0.55f; };
+
+        const float sus = juce::jlimit (0.f, 1.f, value (2));
+        const float il  = params.size() > 4 ? juce::jlimit (0.f, 1.f, value (4)) : 0.f;
+        const float al  = params.size() > 5 ? juce::jlimit (0.f, 1.f, value (5, 1.f)) : 1.f;
+
+        float wa = tw (0), wd = tw (1), wr = tw (3);
+        const float total = wa + wd + wr + 0.3f;    // 0.3 = fixed sustain leg
+        wa = wa / total * W; wd = wd / total * W; wr = wr / total * W;
+
+        auto toY = [] (float v) { return H - 2.f - (H - 6.f) * v; };
+        const float susY = toY (sus * al);
+
+        grid.startNewSubPath (0.f, H - 2.f);
+        grid.lineTo (W, H - 2.f);
+
+        p.startNewSubPath (0.f, toY (il));
+        p.lineTo (wa, toY (al));
+        // decay and release curve rather than ramp - an exponential segment
+        // is what the envelope actually does
+        p.quadraticTo (wa + wd * 0.35f, susY, wa + wd, susY);
+        p.lineTo (W - wr, susY);
+        p.quadraticTo (W - wr * 0.6f, toY (0.f), W, toY (0.f));
     }
-    else // lfoKind
+    else // lfoKind - two cycles of the selected shape
     {
-        const int wave = (int) std::round (norm (0) * 4.f);
-        const float x0 = 3.f, x1 = 97.f, midY = 14.f, amp = 9.f;
-        const int steps = 48;
-        p.startNewSubPath (x0, midY);
-        float shPrev = 0.f;
-        for (int i = 1; i <= steps; ++i)
+        const int wave = params.empty() || params[0] == nullptr
+                       ? 0 : (int) std::round (params[0]->getValue() * 4.f);
+        constexpr float mid = H * 0.5f, amp = H * 0.5f - 3.f;
+        constexpr int steps = 80;
+
+        grid.startNewSubPath (0.f, mid);
+        grid.lineTo (W, mid);
+
+        static const float sh[8] = { 0.3f, -0.5f, 0.8f, -0.2f, 0.55f, -0.75f, 0.1f, -0.4f };
+        float prev = 0.f;
+        for (int i = 0; i <= steps; ++i)
         {
-            const float t = (float) i / (float) steps;          // 2 cycles over t 0..1
+            const float t = (float) i / (float) steps;
             const float ph = std::fmod (t * 2.f, 1.f);
-            const float x = x0 + t * (x1 - x0);
-            float v = 0.f;
+            const float x = t * W;
+            float v;
             switch (wave)
             {
-                case 0: v = std::sin (t * juce::MathConstants<float>::twoPi * 2.f); break;
-                case 1: v = ph < 0.5f ? ph * 4.f - 1.f : 3.f - ph * 4.f; break;
-                case 2: v = ph < 0.5f ? 1.f : -1.f; break;
-                case 3: v = 1.f - ph * 2.f; break;
-                default:
-                {
-                    static const float sh[8] = { 0.7f, -0.4f, 0.9f, 0.1f, -0.8f, 0.5f, -0.2f, -0.9f };
-                    v = sh[juce::jlimit (0, 7, (int) (t * 8.f))];
-                    if (v != shPrev) p.lineTo (x, midY - shPrev * amp);   // squared steps
-                    shPrev = v;
-                    break;
-                }
+                case 1:  v = 1.f - 4.f * std::abs (std::fmod (ph + 0.25f, 1.f) - 0.5f); break;
+                case 2:  v = ph < 0.5f ? 1.f : -1.f; break;
+                case 3:  v = 1.f - 2.f * ph; break;
+                case 4:  v = sh[juce::jlimit (0, 7, (int) (t * 8.f))]; break;
+                default: v = std::sin (t * juce::MathConstants<float>::twoPi * 2.f); break;
             }
-            p.lineTo (x, midY - v * amp);
+            if (i == 0) p.startNewSubPath (x, mid - v * amp);
+            else
+            {
+                // square and S&H step vertically instead of ramping
+                if ((wave == 2 || wave == 4) && std::abs (v - prev) > 1.0e-6f)
+                    p.lineTo (x, mid - prev * amp);
+                p.lineTo (x, mid - v * amp);
+            }
+            prev = v;
         }
     }
-    p.applyTransform (juce::AffineTransform::scale ((float) getWidth() / 100.f,
-                                                    (float) getHeight() / 28.f));
-    g.setColour (ui::scopeTrace);
-    g.strokePath (p, juce::PathStrokeType (1.8f));
+
+    const auto scale = juce::AffineTransform::scale ((float) getWidth() / W,
+                                                     (float) getHeight() / H);
+    p.applyTransform (scale);
+    grid.applyTransform (scale);
+
+    g.setColour (ui::scopeLine);
+    g.strokePath (grid, juce::PathStrokeType (1.f));
+    // faint bloom, then the line itself
+    g.setColour (trace.withAlpha (0.25f));
+    g.strokePath (p, juce::PathStrokeType (3.2f, juce::PathStrokeType::curved,
+                                           juce::PathStrokeType::rounded));
+    g.setColour (trace);
+    g.strokePath (p, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved,
+                                           juce::PathStrokeType::rounded));
 }
 
 // ================================================================ Section
@@ -781,16 +939,21 @@ Section::Section (const juce::String& n, juce::Colour s) : name (n), stripe (s) 
 
 void Section::paint (juce::Graphics& g)
 {
+    // Rounded card rather than the old hairline rule: against a dark
+    // chassis a section needs its own surface to separate from the page.
+    auto card = getLocalBounds().toFloat().reduced (2.f, 1.f);
+    g.setColour (ui::cardBg);
+    g.fillRoundedRectangle (card, 7.f);
     g.setColour (ui::line);
-    g.fillRect (0, 0, 1, getHeight());          // hairline left border
+    g.drawRoundedRectangle (card.reduced (0.5f), 7.f, 1.f);
 
     auto f = ui::sans (11.f, true);
     f.setExtraKerningFactor (0.05f);
-    g.setColour (ui::ink);
+    g.setColour (ui::textHi);
     g.setFont (f);
     g.drawText (name, 14, 7, getWidth() - 20, 12, juce::Justification::centredLeft);
     g.setColour (stripe);
-    g.fillRect (14, 21, 26, 3);
+    g.fillRoundedRectangle (14.f, 21.f, 26.f, 3.f, 1.5f);
 }
 
 void Section::addItem (juce::Component& c, int width)
@@ -828,11 +991,11 @@ void Section::resized()
     {
         const int w = (*it)->preferredWidth();
         tx -= w;
-        (*it)->setBounds (tx, 6, w, 14);
-        tx -= 12;
+        (*it)->setBounds (tx, 5, w, 16);
+        tx -= 6;
     }
     if (display != nullptr)
-        display->setBounds (getWidth() - 12 - displayW, 4, displayW, 22);
+        display->setBounds (getWidth() - 12 - displayW, 4, displayW, 24);
 
     auto b = getLocalBounds().withTrimmedTop (30).withTrimmedLeft (14)
                              .withTrimmedRight (12).withTrimmedBottom (8);
@@ -869,7 +1032,10 @@ void ScopeTap::timerCallback()
 
 ScopeComponent::ScopeComponent (ScopeTap& t) : tap (t)
 {
-    setInterceptsMouseClicks (false, false);
+    // hover (for the tooltip) but never swallow a click
+    setInterceptsMouseClicks (true, false);
+    setTooltip ("Output waveform, triggered on a rising zero crossing so the trace "
+                "stands still. Graticule lines are quarter divisions");
     tap.addView (this);
 }
 
@@ -878,12 +1044,32 @@ void ScopeComponent::paint (juce::Graphics& g)
     auto r = getLocalBounds().toFloat();
     g.setColour (ui::scopeBg);
     g.fillRoundedRectangle (r, 5.f);
-    g.setColour (ui::line);
+    g.setColour (ui::track);
     g.drawRoundedRectangle (r.reduced (0.5f), 5.f, 1.f);
 
-    auto area = r.reduced (6.f, 6.f);
-    g.setColour (ui::scopeLine);
-    g.drawHorizontalLine ((int) area.getCentreY(), area.getX(), area.getRight());
+    auto area = r.reduced (5.f, 5.f);
+
+    // graticule: centre line plus quarter divisions each way
+    {
+        juce::Path grid;
+        const float midY = area.getCentreY();
+        grid.startNewSubPath (area.getX(), midY);
+        grid.lineTo (area.getRight(), midY);
+        for (int i = 1; i < 4; ++i)
+        {
+            const float x = area.getX() + area.getWidth() * (float) i / 4.f;
+            grid.startNewSubPath (x, area.getY());
+            grid.lineTo (x, area.getBottom());
+        }
+        for (int s = -1; s <= 1; s += 2)
+        {
+            const float y = midY + (float) s * area.getHeight() * 0.25f;
+            grid.startNewSubPath (area.getX(), y);
+            grid.lineTo (area.getRight(), y);
+        }
+        g.setColour (ui::scopeLine);
+        g.strokePath (grid, juce::PathStrokeType (1.f));
+    }
 
     // mono sum, rising-edge triggered so the trace stands still
     const auto& buf = tap.lBuf();
@@ -911,35 +1097,47 @@ void ScopeComponent::paint (juce::Graphics& g)
         if (i == 0) p.startNewSubPath (px, py);
         else        p.lineTo (px, py);
     }
+
+    // Translucent body between the trace and the centre line, so a quiet
+    // patch still reads as a shape rather than a flat wire.
+    {
+        juce::Path body (p);
+        body.lineTo (area.getRight(), midY);
+        body.lineTo (area.getX(), midY);
+        body.closeSubPath();
+        g.setColour (ui::scopeTrace.withAlpha (0.13f));
+        g.fillPath (body);
+    }
+
+    // Three passes of falling width fake the phosphor bloom the mockup gets
+    // from a canvas shadow; JUCE has no cheap blur here.
+    g.setColour (ui::scopeTrace.withAlpha (0.14f));
+    g.strokePath (p, juce::PathStrokeType (5.5f, juce::PathStrokeType::curved,
+                                           juce::PathStrokeType::rounded));
+    g.setColour (ui::scopeTrace.withAlpha (0.3f));
+    g.strokePath (p, juce::PathStrokeType (3.f, juce::PathStrokeType::curved,
+                                           juce::PathStrokeType::rounded));
     g.setColour (ui::scopeTrace);
-    g.strokePath (p, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved));
+    g.strokePath (p, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved,
+                                           juce::PathStrokeType::rounded));
 }
 
 // ============================================================== Lissajous
 LissajousScope::LissajousScope (ScopeTap& t) : tap (t)
 {
-    setInterceptsMouseClicks (false, false);
+    // hover (for the tooltip) but never swallow a click
+    setInterceptsMouseClicks (true, false);
     setTooltip ("Vector display: left against right, rotated so mono draws a vertical line. "
-                "A wide, round shape is a wide stereo image; a horizontal line is out of phase");
+                "A wide, round shape is a wide stereo image; a horizontal line is out of phase. "
+                "The trace fades over about a second, so the shape a patch traces stays readable");
     tap.addView (this);
 }
 
 void LissajousScope::paint (juce::Graphics& g)
 {
     auto b = getLocalBounds().toFloat();
-    g.setColour (ui::scopeBg);
-    g.fillRoundedRectangle (b, 5.f);
-    g.setColour (ui::line);
-    g.drawRoundedRectangle (b.reduced (0.5f), 5.f, 1.f);
-
     const auto c = b.getCentre();
     const float rad = juce::jmin (b.getWidth(), b.getHeight()) * 0.5f - 5.f;
-
-    // graticule: the two 45-degree axes plus a bounding circle
-    g.setColour (ui::scopeLine);
-    g.drawEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f, 1.f);
-    g.drawLine (c.x, c.y - rad, c.x, c.y + rad, 1.f);
-    g.drawLine (c.x - rad, c.y, c.x + rad, c.y, 1.f);
 
     // Mid/side rotation: y = L+R (mono energy, up), x = L-R (the difference),
     // zoomed so a loud wide patch fills the circle instead of sitting in a
@@ -973,25 +1171,81 @@ void LissajousScope::paint (juce::Graphics& g)
         if (! started) { p.startNewSubPath (x, y); started = true; }
         else           p.lineTo (x, y);
     }
-    g.setColour (ui::scopeTrace.withAlpha (0.75f));
-    g.strokePath (p, juce::PathStrokeType (1.f));
+
+    // Persistence layer. Rather than clearing, each frame lays a translucent
+    // wash of the background over the last one and draws on top, so older
+    // sweeps decay over roughly a dozen frames. The graticule is redrawn
+    // every frame so it does not fade with them.
+    const int iw = juce::jmax (1, getWidth()), ih = juce::jmax (1, getHeight());
+    if (! phosphor.isValid() || phosphor.getWidth() != iw || phosphor.getHeight() != ih)
+    {
+        phosphor = juce::Image (juce::Image::ARGB, iw, ih, true);
+        juce::Graphics ig (phosphor);
+        ig.setColour (ui::scopeBg);
+        ig.fillAll();
+    }
+
+    {
+        juce::Graphics ig (phosphor);
+        // Decay has to outrun the draw or a steady patch saturates to a
+        // solid blob within a second and stops reading as a trace.
+        ig.setColour (ui::scopeBg.withAlpha (0.4f));
+        ig.fillAll();
+
+        ig.setColour (ui::scopeTrace.withAlpha (0.16f));
+        ig.strokePath (p, juce::PathStrokeType (2.4f, juce::PathStrokeType::curved,
+                                                juce::PathStrokeType::rounded));
+        ig.setColour (ui::scopeTrace.withAlpha (0.62f));
+        ig.strokePath (p, juce::PathStrokeType (1.f, juce::PathStrokeType::curved,
+                                                juce::PathStrokeType::rounded));
+    }
+
+    // rounded window: clip the decayed image to the panel shape
+    {
+        juce::Path clip;
+        clip.addRoundedRectangle (b, 5.f);
+        juce::Graphics::ScopedSaveState save (g);
+        g.reduceClipRegion (clip);
+        g.drawImageAt (phosphor, 0, 0);
+    }
+
+    // graticule: the two axes plus a bounding circle, over the trace
+    g.setColour (ui::scopeLine.withAlpha (0.9f));
+    g.drawEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f, 1.f);
+    g.drawLine (c.x, c.y - rad, c.x, c.y + rad, 1.f);
+    g.drawLine (c.x - rad, c.y, c.x + rad, c.y, 1.f);
+
+    g.setColour (ui::track);
+    g.drawRoundedRectangle (b.reduced (0.5f), 5.f, 1.f);
 }
 
 // ============================================================= PitchWheel
 void PitchWheel::paint (juce::Graphics& g)
 {
     auto body = getLocalBounds().toFloat().withTrimmedBottom (13.f);
-    body = body.withSizeKeepingCentre (26.f, body.getHeight());
-    g.setColour (ui::wheelBg);
-    g.fillRoundedRectangle (body, 12.f);
-    g.setColour (ui::line);
-    g.drawRoundedRectangle (body.reduced (0.5f), 12.f, 1.f);
+    body = body.withSizeKeepingCentre (28.f, body.getHeight());
+    // shaded barrel: dark at the ends, lit across the middle
+    g.setGradientFill ([&]
+    {
+        juce::ColourGradient grad (ui::groove, body.getX(), body.getY(),
+                                   ui::groove, body.getX(), body.getBottom(), false);
+        grad.addColour (0.5, ui::wheelBg.brighter (0.15f));
+        return grad;
+    }());
+    g.fillRoundedRectangle (body, 6.f);
+    g.setColour (ui::ctrlLine);
+    g.drawRoundedRectangle (body.reduced (0.5f), 6.f, 1.f);
+    g.setColour (ui::knobRim.withAlpha (0.7f));   // centre detent
+    g.fillRect (body.getX(), body.getCentreY() - 0.5f, body.getWidth(), 1.f);
 
     const float travel = body.getHeight() * 0.5f - 12.f;
     const float hy = body.getCentreY() - value * travel;
-    auto handle = juce::Rectangle<float> (body.getX() + 3.f, hy - 6.f, body.getWidth() - 6.f, 12.f);
-    g.setColour (ui::ink);
+    auto handle = juce::Rectangle<float> (body.getX() + 3.f, hy - 8.f, body.getWidth() - 6.f, 16.f);
+    g.setGradientFill (juce::ColourGradient (ui::thumbHi, handle.getX(), handle.getY(),
+                                             ui::thumbLo, handle.getX(), handle.getBottom(), false));
     g.fillRoundedRectangle (handle, 3.f);
+    g.setColour (ui::thumbEdge);
+    g.drawRoundedRectangle (handle.reduced (0.5f), 3.f, 1.f);
 
     g.setColour (ui::dim);
     g.setFont (ui::sans (8.5f, true));
@@ -1034,24 +1288,24 @@ void PanelChips::paint (juce::Graphics& g)
         juce::Path tab;
         tab.addRoundedRectangle (r.getX(), r.getY(), r.getWidth(), r.getHeight(),
                                  4.f, 4.f, true, true, false, false);
-        if (on)
-        {
-            g.setColour (col);
-            g.fillPath (tab);
-        }
-        else
-        {
-            g.setColour (ui::track);
-            g.strokePath (tab, juce::PathStrokeType (1.f));
-        }
+        g.setColour (on ? col.withAlpha (0.28f) : ui::chipOff);
+        g.fillPath (tab);
+        g.setColour (on ? col : ui::track);
+        g.strokePath (tab, juce::PathStrokeType (1.f));
 
         auto f = ui::sans (11.f, true);
         f.setExtraKerningFactor (0.06f);
         const float tw = f.getStringWidthFloat (names[i]);
         const float cx = r.getCentreX() + 7.f;              // shift right for the dot
-        g.setColour (on ? ui::cream : col);
-        g.fillEllipse (cx - tw * 0.5f - 14.f, r.getCentreY() - 3.5f, 7.f, 7.f);
-        g.setColour (on ? ui::cream : ui::dim);
+        auto dot = juce::Rectangle<float> (cx - tw * 0.5f - 14.f, r.getCentreY() - 3.5f, 7.f, 7.f);
+        if (on)                                             // lit tab: the dot glows
+        {
+            g.setColour (col.withAlpha (0.35f));
+            g.fillEllipse (dot.expanded (3.f));
+        }
+        g.setColour (on ? col : ui::ledOff);
+        g.fillEllipse (dot);
+        g.setColour (on ? ui::textHi : ui::dim);
         g.setFont (f);
         g.drawText (names[i], (int) (cx - tw * 0.5f), 0, (int) tw + 4, getHeight(),
                     juce::Justification::centredLeft);
@@ -1082,7 +1336,7 @@ void KeyZoneStrip::setMode (int engineMode)
 void KeyZoneStrip::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds().toFloat();
-    g.setColour (ui::cardBg);
+    g.setColour (ui::groove);
     g.fillRoundedRectangle (r, 3.f);
 
     const int splitNote = (int) proc.apvts.getRawParameterValue (ID::splitPoint)->load();
@@ -1100,8 +1354,9 @@ void KeyZoneStrip::paint (juce::Graphics& g)
         else
             zone = proc.getKeyZone (n);
 
-        const auto col = zone == 0 ? ui::ink : zone == 1 ? ui::jpAccent : ui::stOsc;
-        g.setColour (col.withAlpha (0.88f));
+        // 0 = CS-80, 1 = JP-8, 2 = both
+        const auto col = zone == 0 ? ui::stOsc : zone == 1 ? ui::jpAccent : ui::stEnv;
+        g.setColour (col.withAlpha (0.72f));
         g.fillRect (kr.getX() + 0.5f, 2.f, kr.getWidth() - 1.f, (float) getHeight() - 4.f);
     }
 
@@ -1285,7 +1540,7 @@ void SeqGrid::paint (juce::Graphics& g)
 
             // body
             const bool lit = st.count > 0 && ! swallowed;
-            juce::Colour fill = beyond ? ui::scopeBg.brighter (0.02f)
+            juce::Colour fill = beyond ? ui::winBg.withAlpha (0.6f)
                               : lit ? ui::scopeTrace.withAlpha (track.mute ? 0.16f : 0.34f)
                                     : ui::scopeLine.withAlpha (swallowed ? 0.28f : 0.5f);
             if (onPlayhead)
@@ -1304,7 +1559,7 @@ void SeqGrid::paint (juce::Graphics& g)
             if (st.count > 0)
             {
                 g.setColour (onPlayhead && lit ? ui::scopeBg
-                           : beyond || swallowed ? ui::dim.withAlpha (0.55f) : ui::cream);
+                           : beyond || swallowed ? ui::dimmer.withAlpha (0.7f) : ui::scopeTrace);
                 g.setFont (ui::mono (st.count > 3 ? 8.f : 9.5f));
                 g.drawText (chordText (st), cell.reduced (3, 0),
                             juce::Justification::centred, false);
@@ -1517,10 +1772,10 @@ PluginChooser::PluginChooser (juce::Array<juce::PluginDescription> items,
 {
     search.setTextToShowWhenEmpty ("type to search...", ui::dim);
     search.setFont (ui::sans (13.f));
-    search.setColour (juce::TextEditor::backgroundColourId, ui::winBg);
+    search.setColour (juce::TextEditor::backgroundColourId, ui::groove);
     search.setColour (juce::TextEditor::textColourId, ui::ink);
     search.setColour (juce::TextEditor::outlineColourId, ui::track);
-    search.setColour (juce::TextEditor::focusedOutlineColourId, ui::ink);
+    search.setColour (juce::TextEditor::focusedOutlineColourId, ui::scopeTrace);
     search.setColour (juce::TextEditor::highlightColourId, ui::scopeTrace.withAlpha (0.4f));
     search.setColour (juce::CaretComponent::caretColourId, ui::ink);
     search.addListener (this);
@@ -1554,8 +1809,8 @@ void PluginChooser::visibilityChanged()
 
 void PluginChooser::paint (juce::Graphics& g)
 {
-    g.fillAll (ui::winBg);
-    g.setColour (ui::ink);
+    g.fillAll (ui::bandBg);
+    g.setColour (ui::textHi);
     auto f = ui::sans (11.f, true);
     f.setExtraKerningFactor (0.05f);
     g.setFont (f);
@@ -1608,13 +1863,13 @@ void PluginChooser::paintListBoxItem (int row, juce::Graphics& g, int w, int h, 
 
     if (selected)
     {
-        g.setColour (ui::ink);
+        g.setColour (ui::ctrlLine);
         g.fillRect (0, 0, w, h);
     }
-    g.setColour (selected ? ui::cream : ui::ink);
+    g.setColour (selected ? ui::textHi : ui::ink);
     g.setFont (ui::sans (12.5f));
     g.drawText (d.name, 8, 0, w - 110, h, juce::Justification::centredLeft, true);
-    g.setColour (selected ? ui::cream.withAlpha (0.65f) : ui::dim);
+    g.setColour (selected ? ui::textHi.withAlpha (0.7f) : ui::dim);
     g.setFont (ui::sans (10.f));
     g.drawText (d.manufacturerName, w - 100, 0, 92, h, juce::Justification::centredRight, true);
 }
@@ -1918,7 +2173,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     {
         engineChips = std::make_unique<ChipStack> (*param,
             juce::StringArray { "CS-80", "JP-8", "SPLIT", "LAYER", "KEYS" },
-            juce::String(), true);
+            juce::String(), true, ui::stOsc);
         engineChips->setTooltip (tipFor (ID::engineMode));
         engineChips->onUserChange = [this] { paramTouched (ID::engineMode); };
         engineChips->onRightClick = [this] (juce::Point<int> pos)
@@ -1989,7 +2244,10 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeFader (secFilter, ID::filterEnvAmt, "ENV");
     makeKnob  (secFilter, ID::keyTrack, "KEY TRK");
     makeKnob  (secFilter, ID::filterDrive, "DRIVE");
-    makeDisplay (secFilter, MiniDisplay::filterKind, { ID::lpfCutoff, ID::resonance }, 74);
+    // Both corners and both resonances: the CS-80 filter puts resonance on
+    // the high pass as well, and the display is the only place that shows it.
+    makeDisplay (secFilter, MiniDisplay::filterKind,
+                 { ID::hpfCutoff, ID::lpfCutoff, ID::resonance, ID::hpfRes }, 80);
     addAndMakeVisible (secFilter);
 
     // The CS-80 filter EG is not an ADSR: IL is where it starts from and AL
@@ -2002,7 +2260,10 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeFader (secFEnv, ID::fEnvR, "R");
     makeFader (secFEnv, ID::fEnvAL, "AL");
     makeKnob  (secFEnv, ID::velToFilter, "VEL");
-    makeDisplay (secFEnv, MiniDisplay::adsrKind, { ID::fEnvA, ID::fEnvD, ID::fEnvS, ID::fEnvR }, 88);
+    // IL/AL feed the display too, so the trace starts and peaks where the
+    // CS-80's non-ADSR filter EG actually does
+    makeDisplay (secFEnv, MiniDisplay::adsrKind,
+                 { ID::fEnvA, ID::fEnvD, ID::fEnvS, ID::fEnvR, ID::fEnvIL, ID::fEnvAL }, 88);
     addAndMakeVisible (secFEnv);
 
     makeFader (secAEnv, ID::aEnvA, "A");
@@ -2241,6 +2502,9 @@ VFader* EightyEditor::makeFader (Section& s, const juce::String& paramID, const 
     const auto tip = tipFor (paramID);
     f->setTooltip (tip);
     f->slider.setTooltip (tip);
+    // controls wear their section's stripe, so a row's colour says at a
+    // glance which block a fader belongs to
+    f->slider.setColour (juce::Slider::trackColourId, s.stripeColour());
     s.addItem (*f, width);
     controls.push_back ({ f, paramID });
     f->addMouseListener (this, true);
@@ -2263,6 +2527,7 @@ MiniKnob* EightyEditor::makeKnob (Section& s, const juce::String& paramID, const
     const auto tip = tipFor (paramID);
     k->setTooltip (tip);
     k->slider.setTooltip (tip);
+    k->slider.setColour (juce::Slider::trackColourId, s.stripeColour());
     s.addItem (*k, width);
     controls.push_back ({ k, paramID });
     k->addMouseListener (this, true);
@@ -2296,7 +2561,7 @@ ChipStack* EightyEditor::makeChips (Section& s, const juce::String& paramID,
 {
     auto* param = proc.apvts.getParameter (paramID);
     jassert (param != nullptr);
-    auto* c = new ChipStack (*param, std::move (labels), group);
+    auto* c = new ChipStack (*param, std::move (labels), group, false, s.stripeColour());
     owned.add (c);
     c->setTooltip (tipFor (paramID));
     c->onUserChange = [this, paramID] { paramTouched (paramID); };
@@ -2510,7 +2775,7 @@ ChipStack* EightyEditor::makeLooseChips (const juce::String& paramID, juce::Stri
 {
     auto* param = proc.apvts.getParameter (paramID);
     jassert (param != nullptr);
-    auto* c = new ChipStack (*param, std::move (labels), group, true);
+    auto* c = new ChipStack (*param, std::move (labels), group, true, ui::stFilt);
     c->cellW = cellW;
     owned.add (c);
     c->setTooltip (tipFor (paramID));
@@ -2634,16 +2899,19 @@ void EightyEditor::buildSeqRow()
 // ---- output mixer: one strip per sound source, beside the plugin loader
 void EightyEditor::buildMixer()
 {
-    static const struct { const char* level; const char* mute; const char* solo;
-                          const char* name; } strips[kMixStrips] = {
-        { ID::csLevel,    ID::csMute,    ID::csSolo,    "CS-80" },
-        { ID::jpLevel,    ID::jpMute,    ID::jpSolo,    "JP-8"  },
-        { ID::synthLevel, ID::synthMute, ID::synthSolo, "SYNTH" },
+    // Each strip wears the colour of the source it controls, so the mixer
+    // reads as the same three engines named elsewhere in the panel.
+    const struct { const char* level; const char* mute; const char* solo;
+                   const char* name; juce::Colour accent; } strips[kMixStrips] = {
+        { ID::csLevel,    ID::csMute,    ID::csSolo,    "CS-80", ui::stOsc    },
+        { ID::jpLevel,    ID::jpMute,    ID::jpSolo,    "JP-8",  ui::jpAccent },
+        { ID::synthLevel, ID::synthMute, ID::synthSolo, "SYNTH", ui::stFilt   },
     };
 
     for (int i = 0; i < kMixStrips; ++i)
     {
         mixFader[i] = makeLooseFader (strips[i].level, strips[i].name);
+        mixFader[i]->slider.setColour (juce::Slider::trackColourId, strips[i].accent);
         mixMute[i]  = makeLooseLed (strips[i].mute, "M");
         mixSolo[i]  = makeLooseLed (strips[i].solo, "S");
     }
@@ -2912,35 +3180,45 @@ void EightyEditor::paint (juce::Graphics& g)
 {
     g.fillAll (ui::winBg);
 
-    // engine row: 3px top border in the engine colour over a tinted wash
+    // The chassis is a stack of panels on a dark page: the header, tab,
+    // sequencer and footer bands each get their own surface, while the three
+    // control rows sit directly on the page because their Sections are
+    // already cards.
+    auto panel = [&] (int y, int h)
+    {
+        auto r = juce::Rectangle<float> (7.f, (float) y + 2.f,
+                                         (float) getWidth() - 14.f, (float) h - 4.f);
+        g.setColour (ui::bandBg);
+        g.fillRoundedRectangle (r, 9.f);
+        g.setColour (ui::line);
+        g.drawRoundedRectangle (r.reduced (0.5f), 9.f, 1.f);
+    };
+
+    panel (0, ui::headerH);
+    panel (ui::tabY, ui::tabH);
+
+    // engine row: the panel you are editing tints its own strip, so CS and
+    // JP are told apart before you read a single label
     const auto ec = jpView ? ui::jpAccent : ui::stOsc;
-    g.setColour (ec.withAlpha (jpView ? 0.12f : 0.06f));
-    g.fillRect (0, ui::engineY, getWidth(), ui::engineH);
-    g.setColour (ec);
-    g.fillRect (0, ui::engineY, getWidth(), 3);
+    g.setColour (ec.withAlpha (0.09f));
+    g.fillRoundedRectangle (7.f, (float) ui::engineY + 1.f,
+                            (float) getWidth() - 14.f, (float) ui::engineH - 2.f, 9.f);
+    g.setColour (ec.withAlpha (0.85f));
+    g.fillRoundedRectangle (7.f, (float) ui::engineY + 1.f,
+                            (float) getWidth() - 14.f, 3.f, 1.5f);
 
-    // shared row: hairline top border
-    g.setColour (ui::line);
-    g.fillRect (0, ui::sharedY, getWidth(), 1);
-
-    // sequencer row: its own faint wash so the grid reads as one block
-    g.setColour (ui::stLfo.withAlpha (0.05f));
-    g.fillRect (0, ui::seqY, getWidth(), ui::seqH);
-    g.setColour (ui::line);
-    g.fillRect (0, ui::seqY, getWidth(), 1);
-
-    // footer top border
-    g.fillRect (0, ui::footerY, getWidth(), 1);
+    panel (ui::seqY, ui::seqH);
+    panel (ui::footerY, ui::footerH);
 
     // sequencer row heading + stripe, in the Section idiom
     {
         auto f = ui::sans (11.f, true);
         f.setExtraKerningFactor (0.05f);
-        g.setColour (ui::ink);
+        g.setColour (ui::textHi);
         g.setFont (f);
         g.drawText ("SEQUENCER", 14, ui::seqY + 7, 200, 12, juce::Justification::centredLeft);
         g.setColour (ui::stLfo);
-        g.fillRect (14, ui::seqY + 21, 26, 3);
+        g.fillRoundedRectangle (14.f, (float) ui::seqY + 21.f, 26.f, 3.f, 1.5f);
 
         g.setColour (ui::dim);
         g.setFont (ui::sans (8.5f, true));
@@ -2948,24 +3226,27 @@ void EightyEditor::paint (juce::Graphics& g)
         // one caption per grid row, aligned with that track's controls
         const int row0 = ui::seqY + 10 + SeqGrid::rulerH;
         const int row1 = row0 + SeqGrid::rowH + SeqGrid::rowGap;
+        g.setColour (ui::inkSoft);
         g.drawText ("TRACK A", 212, row0 + 1, 70, 10, juce::Justification::centredLeft);
         g.drawText ("TRACK B", 212, row1 + 1, 70, 10, juce::Justification::centredLeft);
 
         // dark panel behind the scale / step-clock readout, matching the LCD
         g.setColour (ui::scopeBg);
         g.fillRoundedRectangle (seqStripArea.toFloat(), 3.f);
+        g.setColour (ui::track);
+        g.drawRoundedRectangle (seqStripArea.toFloat().reduced (0.5f), 3.f, 1.f);
     }
 
     // mixer card in the footer, in the insert panel's idiom
     {
         auto r = mixerArea.toFloat().reduced (0.5f);
         g.setColour (ui::cardBg);
-        g.fillRoundedRectangle (r, 4.f);
+        g.fillRoundedRectangle (r, 6.f);
         g.setColour (ui::line);
-        g.drawRoundedRectangle (r, 4.f, 1.f);
-        g.setColour (ui::dim);
+        g.drawRoundedRectangle (r, 6.f, 1.f);
+        g.setColour (ui::inkSoft);
         g.setFont (ui::sans (8.5f, true));
-        g.drawText ("MIXER", mixerArea.getX() + 10, mixerArea.getY() + 4, 120, 10,
+        g.drawText ("OUTPUT MIXER", mixerArea.getX() + 10, mixerArea.getY() + 4, 120, 10,
                     juce::Justification::centredLeft);
     }
 
@@ -2976,8 +3257,13 @@ void EightyEditor::paint (juce::Graphics& g)
                 juce::Justification::centredLeft);
 
     // LCD readout background
-    g.setColour (ui::scopeBg);
-    g.fillRoundedRectangle (statusLabel.getBounds().toFloat().expanded (14.f, 0.f), 3.f);
+    {
+        auto lcd = statusLabel.getBounds().toFloat().expanded (14.f, 3.f);
+        g.setColour (ui::scopeBg);
+        g.fillRoundedRectangle (lcd, 4.f);
+        g.setColour (ui::track);
+        g.drawRoundedRectangle (lcd.reduced (0.5f), 4.f, 1.f);
+    }
 }
 
 void EightyEditor::layoutRows()
@@ -3123,11 +3409,11 @@ void EightyEditor::resized()
         {
             const int cx = mixX + 8 + i * colW;
             mixFader[i]->setBounds (cx, fy + 14, colW, 80);
-            const int mw = mixMute[i]->preferredWidth() + 4;
-            const int sw = mixSolo[i]->preferredWidth() + 4;
-            const int left = cx + (colW - (mw + 6 + sw)) / 2;
-            mixMute[i]->setBounds (left, fy + 96, mw, 14);
-            mixSolo[i]->setBounds (left + mw + 6, fy + 96, sw, 14);
+            const int mw = mixMute[i]->preferredWidth();
+            const int sw = mixSolo[i]->preferredWidth();
+            const int left = cx + (colW - (mw + 4 + sw)) / 2;
+            mixMute[i]->setBounds (left, fy + 95, mw, 16);
+            mixSolo[i]->setBounds (left + mw + 4, fy + 95, sw, 16);
         }
     }
 

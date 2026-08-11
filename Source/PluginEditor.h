@@ -1,35 +1,54 @@
 #pragma once
 #include "PluginProcessor.h"
 
-// ---------------------------------------- palette: "Refined Cream Strip"
+// ------------------------------------------------- palette: "Eighty Dark"
+// Dark blue-grey, from the Claude Design handoff. The names carry the same
+// roles they did in the old cream theme - `ink` is still "strongest
+// foreground", `dim` still "secondary text" - so paint code did not have to
+// be re-reasoned, only re-pointed. Anything that is a *surface* rather than
+// a colour role got its own name below.
 namespace ui
 {
-    const juce::Colour winBg     { 0xffece6da };   // cream panel
-    const juce::Colour cardBg    { 0xfff7f3ea };   // lighter cream (boxes)
-    const juce::Colour line      { 0xffc9c0af };   // hairline dividers
-    const juce::Colour track     { 0xffb8ae9a };   // fader tracks / off borders
-    const juce::Colour ink       { 0xff2a2723 };   // primary dark
-    const juce::Colour inkSoft   { 0xff4a443b };   // fader labels
-    const juce::Colour mid       { 0xff6a6357 };   // knob labels
-    const juce::Colour dim       { 0xff8d8578 };   // secondary text
-    const juce::Colour cream     { 0xfff4efe6 };   // text on ink
-    const juce::Colour ledOn     { 0xffb6412f };   // LED / selection
-    const juce::Colour ledOff    { 0x2e2a2723 };
-    const juce::Colour scopeBg   { 0xff201d18 };
-    const juce::Colour scopeLine { 0xff3a352c };
-    const juce::Colour scopeTrace{ 0xffe8a33d };   // amber: traces + value arcs
-    const juce::Colour jpAccent  { 0xff5f57a8 };   // Jupiter-8 identity
-    const juce::Colour wheelBg   { 0xffddd5c4 };
-    const juce::Colour keyDown   { 0xffeec18a };
+    const juce::Colour winBg     { 0xff232b3b };   // page background
+    const juce::Colour bandBg    { 0xff2b3446 };   // header / tab / seq / footer bands
+    const juce::Colour cardBg    { 0xff323d52 };   // section cards
+    const juce::Colour line      { 0xff4c5b7c };   // borders / dividers
+    const juce::Colour track     { 0xff4f5f82 };   // inactive borders
+    const juce::Colour ink       { 0xffe8edf7 };   // primary foreground
+    const juce::Colour inkSoft   { 0xffccd6e6 };   // fader labels
+    const juce::Colour mid       { 0xffccd6e6 };   // knob labels
+    const juce::Colour dim       { 0xff8c9ab5 };   // secondary text
+    const juce::Colour ledOn     { 0xffff7a52 };   // LED / selection
+    const juce::Colour ledOff    { 0xff5f6c84 };
+    const juce::Colour scopeBg   { 0xff0f141c };   // scopes, LCDs, value readouts
+    const juce::Colour scopeLine { 0xff2c3850 };
+    const juce::Colour scopeTrace{ 0xffffb454 };   // amber: traces + value arcs
+    const juce::Colour jpAccent  { 0xff8f86e8 };   // Jupiter-8 identity
+    const juce::Colour wheelBg   { 0xff2f3a4f };
+    const juce::Colour keyDown   { 0xffffb454 };
+
+    // control chrome
+    const juce::Colour ctrlBg    { 0xff3a4660 };   // buttons, LED pills
+    const juce::Colour ctrlLine  { 0xff546488 };
+    const juce::Colour chipOff   { 0xff36415a };
+    const juce::Colour knobFace  { 0xff3e4a63 };
+    const juce::Colour knobRim   { 0xff5e6d8c };
+    const juce::Colour knobHub   { 0xff4e5b74 };
+    const juce::Colour groove    { 0xff232c3e };   // fader track
+    const juce::Colour thumbHi   { 0xff71809c };   // fader cap gradient
+    const juce::Colour thumbLo   { 0xff5e6d8c };
+    const juce::Colour thumbEdge { 0xff8b9ab8 };
+    const juce::Colour textHi    { 0xfff2f5fb };   // titles / selected chip text
+    const juce::Colour dimmer    { 0xff7484a0 };   // placeholder text
 
     // section stripes
-    const juce::Colour stLfo   { 0xffb6412f };
-    const juce::Colour stOsc   { 0xffc97f2e };     // doubles as the CS accent
-    const juce::Colour stMix   { 0xffa08a2f };
-    const juce::Colour stFilt  { 0xff3f6ea5 };
-    const juce::Colour stEnv   { 0xff4a8a58 };
-    const juce::Colour stTouch { 0xff7d5a9e };
-    const juce::Colour stVoice { 0xff3d8f83 };
+    const juce::Colour stLfo   { 0xffe06552 };
+    const juce::Colour stOsc   { 0xffe8a33d };     // doubles as the CS accent
+    const juce::Colour stMix   { 0xffc9b458 };
+    const juce::Colour stFilt  { 0xff5b9dd9 };
+    const juce::Colour stEnv   { 0xff5fb878 };
+    const juce::Colour stTouch { 0xffa583d9 };
+    const juce::Colour stVoice { 0xff45b3a0 };
 
     juce::Font sans (float size, bool bold = false);
     juce::Font mono (float size);
@@ -54,10 +73,10 @@ namespace ui
 }
 
 // ------------------------------------------------------------ LookAndFeel
-class CreamLNF : public juce::LookAndFeel_V4
+class EightyLNF : public juce::LookAndFeel_V4
 {
 public:
-    CreamLNF();
+    EightyLNF();
     void drawLinearSlider (juce::Graphics&, int x, int y, int w, int h,
                            float pos, float minPos, float maxPos,
                            juce::Slider::SliderStyle, juce::Slider&) override;
@@ -86,10 +105,13 @@ public:
 
 // ---------------------------------------------------------- fader / knob
 // Both carry a persistent mono value readout under the name label.
+// The readout sits in an inset dark chip, so amber-on-dark reads the same
+// everywhere: value boxes, LCD, scopes.
 class VFader : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     explicit VFader (const juce::String& labelText);
+    void paint (juce::Graphics&) override;
     void resized() override;
     LearnSlider slider;
     juce::Label label, value;
@@ -99,6 +121,7 @@ class MiniKnob : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     explicit MiniKnob (const juce::String& labelText, bool headerStyle = false);
+    void paint (juce::Graphics&) override;
     void resized() override;
     LearnSlider slider;
     juce::Label label, value;
@@ -114,7 +137,7 @@ class ChipStack : public juce::Component, public juce::SettableTooltipClient
 public:
     ChipStack (juce::RangedAudioParameter& param, juce::StringArray labels,
                const juce::String& groupLabel, bool horizontal = false,
-               juce::Colour onColour = ui::ink);
+               juce::Colour onColour = ui::scopeTrace);
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
 
@@ -157,15 +180,34 @@ private:
 // ----------------------------------------------------------- mini display
 // Small amber-on-dark readout at a section's top-right: filter response,
 // ADSR shape or LFO waveform, redrawn from the current parameter values.
-class MiniDisplay : public juce::Component, private juce::Timer
+//
+// These are plotted from the parameters' *real* units (Hz, seconds), not
+// from the normalised 0-1 positions, so the picture tracks what the DSP
+// actually does: the filter trace is a magnitude response on a log
+// frequency axis with the resonance peaks where the filter puts them, and
+// the envelope's segment widths are its real times, root-compressed so a
+// 10-second release still leaves room for the attack.
+//
+// Parameter order per kind:
+//   filterKind - hpf, lpf, res [, hpfRes]
+//   adsrKind   - a, d, s, r [, initialLevel, attackLevel]
+//   lfoKind    - wave
+class MiniDisplay : public juce::Component,
+                    public juce::SettableTooltipClient,
+                    private juce::Timer
 {
 public:
     enum Kind { filterKind, adsrKind, lfoKind };
     MiniDisplay (Kind, std::vector<juce::RangedAudioParameter*> params);
     void paint (juce::Graphics&) override;
 
+    juce::Colour trace = ui::scopeTrace;
+
 private:
     void timerCallback() override;
+    float value (size_t i, float fallback = 0.f) const;   // real units
+    static float filterMagDb (float f, float lpHz, float hpHz, float q, float qHp);
+
     Kind kind;
     std::vector<juce::RangedAudioParameter*> params;
     std::vector<float> cache;
@@ -185,6 +227,7 @@ public:
     void setDisplay (MiniDisplay* d, int width);
     int preferredWidth() const;
     void setStripe (juce::Colour c) { stripe = c; repaint(); }
+    juce::Colour stripeColour() const { return stripe; }   // controls' accent
 
 private:
     juce::String name;
@@ -223,7 +266,11 @@ private:
     int writePos = 0;
 };
 
-class ScopeComponent : public juce::Component
+// Triggered waveform trace over a divided graticule. The trace is drawn
+// three times - a wide, faint pass, a medium one, then the solid line - so
+// it blooms like a phosphor scope instead of reading as a hairline, and a
+// translucent fill under it gives the trace some body at low levels.
+class ScopeComponent : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     explicit ScopeComponent (ScopeTap& tap);
@@ -235,6 +282,12 @@ private:
 
 // Vector display: L/R plotted rotated 45 degrees, so a mono signal draws a
 // vertical line and stereo width opens it out sideways.
+//
+// Drawn with phosphor persistence: each frame fades the previous one
+// towards the background instead of clearing it, so the shape a patch
+// traces over time stays visible rather than flickering one frame at a
+// time. The decay lives in an offscreen image because JUCE hands paint()
+// a cleared surface every frame.
 class LissajousScope : public juce::Component, public juce::SettableTooltipClient
 {
 public:
@@ -243,6 +296,7 @@ public:
 
 private:
     ScopeTap& tap;
+    juce::Image phosphor;
 };
 
 // ------------------------------------------------------------ pitch wheel
@@ -491,7 +545,7 @@ private:
     void updateSeqReadout();
 
     EightyProcessor& proc;
-    CreamLNF lnf;
+    EightyLNF lnf;
 
     // shared sections (row 2)
     Section secLfo     { "LFO",       ui::stLfo },

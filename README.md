@@ -13,11 +13,20 @@ PANEL chips switch which engine's controls are shown — the JP-8 panel has
 its own slate-violet identity color; shared sections (LFO, Mix, Touch,
 Voices, Arp, FX) stay put.
 
-The UI is the "Cream Strip" design: a light cream panel with flat strip
+The UI is the "Eighty Dark" design: a dark blue-grey chassis with flat card
 sections, vertical faders for primary parameters, small knobs for secondary
 ones, chip-stack selectors, LED toggles, and colored section underlines.
-Every control has a hover tooltip; touched values read out in the footer
-status line (so tooltips are never covered).
+Controls wear their section's accent color, and every value has an
+amber-on-dark readout under it. Every control has a hover tooltip; touched
+values read out in the footer status line (so tooltips are never covered).
+
+The visualizers are drawn from live state rather than as decoration: the
+header carries a zero-crossing-triggered waveform scope over a quarter-
+division graticule and a lissajous vector display with phosphor persistence,
+and each section's mini display plots that section's real values — the
+filter's magnitude response on a log frequency axis (both corners, both
+resonances), the envelopes' actual attack/decay/release times with their
+exponential curves, and the LFO's selected waveform.
 
 ## Formats
 
