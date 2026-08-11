@@ -128,11 +128,25 @@ glide over a CS-80 pad that doesn't:
 
 ## Step sequencer
 
-Two tracks x 16 steps, sharing the arp's rate / division / sync / gate (arp
-and sequencer are mutually exclusive). Each track has its own loop length —
+Two tracks x 16 steps, sharing the step clock with the arp (arp and
+sequencer are mutually exclusive). Each track has its own loop length —
 different lengths give polymeter — plus mute and an engine target, so track
 A can be a CS-80 bass under a JP-8 track B. **Live playing runs on top of a
 running sequence**, which is the point of it.
+
+**Tempo** is one BPM control next to the transport, against the DIV note
+division in the ARP section: 1/16 at 124 BPM, not a rate in hertz. It drives
+the arpeggiator, the sequencer and the synced delay alike. ARP **SYNC**
+hands tempo over to the host, but only when the host actually reports one —
+a standalone build has no host tempo, so the knob keeps working there.
+
+A readout strip under the grid names the **scale** the pattern is in: every
+root and scale family is scored against the pitch classes played, preferring
+the tightest fit (a pentatonic beats the major scale that also contains it)
+and taking the root from the note the pattern leans on, which is what
+settles C major against A minor. A `~` prefix means the pattern spills
+outside the closest scale, and the strip says how many notes did fit. The
+right-hand side shows the step clock actually in force.
 
 - **REC** step-records into the armed track from the cursor: play a note or
   chord, and the cursor advances when you let go. Stops after one lap.
@@ -187,15 +201,32 @@ samples) is reported to the host.
 
 ## Everything else
 
-Hold latch, arpeggiator with an "As Played" mode (sync or free-rate), pitch
-wheel (sprung), full MIDI learn (right-click any knob), delay / tremolo FX,
-output width control, velocity sensitivity, master tune/volume.
+Hold latch, arpeggiator with an "As Played" mode, pitch wheel (sprung), full
+MIDI learn (right-click any knob), delay / tremolo FX, output width control,
+velocity sensitivity, master tune/volume.
+
+**Output mixer** — a strip per sound source beside the plugin loader: the
+CS-80 card, the JP-8 card and the hosted VST3 synth layer, each with a level
+fader, mute and solo. Solo anywhere mutes everything not soloed, as on a
+desk. The engine levels fold into the per-voice gains, which are smoothed at
+control rate, so a mute is a fast fade rather than a click.
 
 **Chorus** has three modes: **I** (wide and slow), **II** (faster and
-deeper) and **ENS** (three taps 120° apart — the thicker CS-80 ensemble
-rather than a chorus). The wet path is darker than the dry, because a BBD is
+deeper) and **ENS**. The wet path is darker than the dry, because a BBD is
 a chain of sample-and-holds with a limited clock, and that roll-off is most
 of why an analog chorus sits behind the sound instead of on top of it.
+
+ENS is a string-machine ensemble rather than a chorus, and it is built not
+to be polite about it: a slow, deep sweep with a ~5 Hz shimmer riding on top
+(the fast modulator is the one you actually hear), one dominant tap per side
+plus a quieter companion a third of a cycle behind it for the comb, and the
+right channel running both modulators inverted so the image swings side to
+side. The taps are deliberately lopsided — two equally weighted taps average
+each other's movement away, which is how this mode used to end up sounding
+like a slightly wider chorus. MIX also pulls the dry down harder here and
+puts a louder wet in its place. Measured against mode II on a mono sine at
+the panel defaults: 1.8x the stereo side energy and 1.6x the departure from
+the dry signal, at the same output level.
 
 Two displays in the header: a triggered waveform trace, and a vector
 (lissajous) display rotated so mono draws a vertical line and stereo width
@@ -213,7 +244,7 @@ Reported latency is forwarded to the host.
 
 **VST3 synth layer** — "+ SET SYNTH" in the same panel opens the same
 searchable list, filtered to instruments, and loads one as a third layer
-across all keys with its own level knob. It's
+across all keys, with its own strip in the mixer next door. It's
 fed the engine's *effective* note stream — so it follows the arpeggiator,
 hold latch, pitch wheel, mod wheel and sustain pedal — and its audio runs
 through Eighty's FX chain.

@@ -59,8 +59,6 @@ public:
 
         bool arpOn = false;
         int  arpMode = 0;            // up, down, updown, random, as played
-        bool arpSync = true;
-        float arpRateHz = 5.f;
         int  arpDiv = 5;
         int  arpOctaves = 1;
         float arpGate = 0.6f;
@@ -70,6 +68,9 @@ public:
         float lfoDelay = 0.f;
         float pwmRate = 0.6f;
 
+        // Effective tempo for the step clock: the processor resolves the
+        // panel TEMPO against the host's, so everything in here counts in
+        // note divisions rather than a free-running frequency.
         double bpm = 120.0;
     };
 
@@ -543,25 +544,61 @@ private:
     {
         int models[2];
         const int layers = layersFor (note, models, forceModel);
+        bool done[2] = { false, false };
         for (int li = 0; li < layers; ++li)
+        {
             releaseForModel (note, models[li], owner);
+            done[models[li]] = true;
+        }
+
+        // The engine mode can change while a key is down (CS -> JP, Layer ->
+        // one card, a repainted key zone), so the card this note-off routes
+        // to is not always the one the note-on triggered. Anything still
+        // sounding on the other card gets its own release pass - otherwise
+        // that voice hangs until you happen to press the key again.
+        for (int m = 0; m < 2; ++m)
+            if (! done[m] && stillSounding (note, m, owner))
+                releaseForModel (note, m, owner);
+    }
+
+    bool stillSounding (int note, int model, int owner) const
+    {
+        if (contains (monoStack[model], note)) return true;
+        for (auto& v : voices)
+            if (v.isHeld() && v.currentNote() == note
+                && v.currentModel() == model && v.currentOwner() == owner)
+                return true;
+        return false;
     }
 
     void releaseForModel (int note, int model, int owner = Voice::kOwnerLive)
     {
         auto& cfg = cfgFor (model);
-        if (! isMonoish (cfg.mode))     // poly and stack: release every voice on the note
-        {
-            for (auto& v : voices)
-                if (v.currentNote() == note && v.currentModel() == model
-                    && v.currentOwner() == owner && v.isHeld())
-                {
-                    if (sustainPedal) v.setSustained (true);
-                    v.noteOff();
-                }
-            return;
-        }
+        if (isMonoish (cfg.mode))
+            releaseMonoish (note, model, owner);
 
+        // A note entered in a mono-ish mode leaves an entry in that card's
+        // note stack. The poly branch would never take it out, and a stale
+        // entry re-triggers a phantom note the next time the mode comes back.
+        removeVal (monoStack[model], note);
+
+        // Poly and stack release every voice on the note - and so do the
+        // mono-ish modes once they have run their own note-stack fallback,
+        // because the voice mode can change while a key is down too. A note
+        // played in Poly and released in Mono left voices sounding that
+        // nothing above would ever have looked for.
+        for (auto& v : voices)
+            if (v.isHeld() && v.currentNote() == note && v.currentModel() == model
+                && v.currentOwner() == owner)
+            {
+                if (sustainPedal) v.setSustained (true);
+                v.noteOff();
+            }
+    }
+
+    void releaseMonoish (int note, int model, int owner)
+    {
+        auto& cfg = cfgFor (model);
         auto& stack = monoStack[model];
         removeVal (stack, note);
         if (! stack.empty())
@@ -863,15 +900,14 @@ private:
         }
     }
 
+    // Step length for both the arpeggiator and the sequencer. Always a note
+    // division of the effective tempo - there is no free-running Hz mode any
+    // more, because "1/16 at 124 BPM" is the thing you actually want to dial.
     int arpStepLengthSamples() const
     {
-        if (es.arpSync && es.bpm > 1.0)
-        {
-            static const double beats[] = { 4.0, 2.0, 1.0, 0.5, 1.0/3.0, 0.25, 1.0/6.0, 0.125 };
-            double b = beats[std::max (0, std::min (7, es.arpDiv))];
-            return std::max (32, (int) (b * 60.0 / es.bpm * sr));
-        }
-        return std::max (32, (int) (sr / std::fmax (0.1f, es.arpRateHz)));
+        static const double beats[] = { 4.0, 2.0, 1.0, 0.5, 1.0/3.0, 0.25, 1.0/6.0, 0.125 };
+        const double b = beats[std::max (0, std::min (7, es.arpDiv))];
+        return std::max (32, (int) (b * 60.0 / std::fmax (1.0, es.bpm) * sr));
     }
 
     void renderWithArp (float* left, float* right, int numSamples)

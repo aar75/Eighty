@@ -156,6 +156,11 @@ public:
     std::atomic<int> activeVoices { 0 };
     std::atomic<int> lastLearnedCC { -1 };
 
+    // Effective tempo, published for the sequencer's readout: the panel
+    // TEMPO unless SYNC is on *and* the host actually reports one.
+    std::atomic<float> uiBpm { 120.f };
+    std::atomic<bool> uiBpmFromHost { false };
+
     // Notes currently held on any input, velocity 1-127 (0 = up). The
     // sequencer grid reads this so clicking a step can drop in whatever
     // you are holding down.
@@ -243,6 +248,12 @@ private:
     bool lastSeqRec = false;
     bool lastSeqPlay = false;
     double hostBpm = 120.0;
+    bool hostBpmValid = false;   // did the host actually give us a tempo?
+    double curBpm = 120.0;       // effective tempo, resolved per block
+
+    // Hosted synth layer gain (mixer level x mute/solo), ramped across the
+    // block so hitting MUTE is a fade rather than a click.
+    float synthGain = 0.8f, lastSynthGain = 0.8f;
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (EightyProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EightyProcessor)

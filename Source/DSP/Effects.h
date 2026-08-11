@@ -10,8 +10,13 @@ namespace eighty
 //   I    two taps in quadrature, slow and shallow - the Jupiter-8's first
 //        chorus button, the one that just makes things wide
 //   II   the same topology run faster and deeper - the second button
-//   ENS  three taps 120 degrees apart plus a slow secondary sweep, which is
-//        the thicker CS-80 ensemble character rather than a chorus
+//   ENS  a string-machine ensemble rather than a chorus, and not a polite
+//        one: a slow deep sweep with a *fast* second modulator riding on it
+//        (the Solina's two-oscillator ensemble is what makes it shimmer
+//        rather than swim), one dominant tap per side plus a quieter
+//        companion for the comb, the right channel's modulators inverted so
+//        the image swings side to side, and a wetter blend than the chorus
+//        modes take - it is meant to read as an effect you switched on
 //
 // The wet path is deliberately darker than the dry: a BBD is a chain of
 // sample-and-holds with a limited clock, and that top-end roll-off is most
@@ -35,18 +40,34 @@ public:
     void setParams (float rateHz, float depth01, float mix01, int modeIdx)
     {
         mode = modeIdx < 0 ? 0 : (modeIdx > 2 ? 2 : modeIdx);
-        const float rateMul  = mode == 1 ? 2.2f : mode == 2 ? 0.7f : 1.f;
-        const float depthMul = mode == 1 ? 1.5f : mode == 2 ? 1.25f : 1.f;
+        const float rateMul  = mode == 1 ? 2.2f : mode == 2 ? 0.55f : 1.f;
+        const float depthMul = mode == 1 ? 1.5f : mode == 2 ? 1.9f : 1.f;
         inc  = rateHz * rateMul / sr;
-        inc2 = rateHz * rateMul * 0.19f / sr;      // slow secondary sweep (ENS)
+        // ENS runs its second modulator far *above* the first - a slow swim
+        // with a ~5 Hz shimmer riding on it is the string-machine sound, and
+        // it is the fast one you actually hear. The other modes keep it as a
+        // slow drift between their taps.
+        inc2 = mode == 2 ? rateHz * 9.f / sr : rateHz * rateMul * 0.19f / sr;
         depth = depth01 * depthMul;
         mix = mix01;
+        // An ensemble is supposed to take the sound over, not sit politely
+        // behind it, so MIX pulls the dry down harder here and pushes a
+        // louder wet up in its place. At the default 40% mix the wet is
+        // already almost level with the dry.
+        wetGain = mode == 2 ? 1.55f : 1.f;
+        dryCut  = mode == 2 ? 0.8f : 0.5f;
     }
 
     void process (float* l, float* r, int n)
     {
-        const float base = 0.012f * sr;          // 12 ms centre
-        const float span = 0.006f * sr * depth;  // +/- up to 6 ms
+        const bool ens = mode == 2;
+        // 18 ms centre for the ensemble, 12 for the chorus modes
+        const float base = (ens ? 0.018f : 0.012f) * sr;
+        // The sweep has to stay inside the delay line: the ensemble's fast
+        // modulator adds to the slow one, so allow for both before clamping.
+        const float reach = ens ? 1.f + fastDepth : 1.f;
+        const float maxSpan = (base - 2.f) / reach;
+        const float span = fminf ((ens ? 0.009f : 0.006f) * sr * depth, maxSpan);
         const float third = 1.f / 3.f;
         for (int i = 0; i < n; ++i)
         {
@@ -59,23 +80,26 @@ public:
             bufR[(size_t) w] = r[i];
 
             float wetL, wetR;
-            if (mode == 2)
+            if (ens)
             {
-                // Three taps evenly spaced round the cycle, each one drifting
-                // against the others on the secondary sweep. Taps 1 and 3 are
-                // hard-placed L/R and tap 2 sits in the middle.
-                const float drift = 0.35f * std::sin (phase2 * 6.2831853f);
-                const float m0 = std::sin ((phase) * 6.2831853f);
-                const float m1 = std::sin ((phase + third + drift) * 6.2831853f);
-                const float m2 = std::sin ((phase + 2.f * third - drift) * 6.2831853f);
+                // One dominant tap per side carrying the whole sweep, plus a
+                // quieter companion a third of a cycle behind it for the
+                // ensemble's comb. Two equally weighted taps average each
+                // other's movement out, which is exactly how this mode ended
+                // up sounding like a slightly wider chorus instead of an
+                // ensemble - the weights are deliberately lopsided.
+                //
+                // Right runs both modulators inverted, so its delay is the
+                // mirror of the left's: the image swings side to side rather
+                // than just getting thicker.
+                const float fast = fastDepth * std::sin (phase2 * 6.2831853f);
+                auto sweep = [] (float ph, float f)
+                { return std::sin (ph * 6.2831853f) + f; };
 
-                const float t0 = readInterp (bufL, base + span * m0);
-                const float t1 = readInterp (bufL, base + span * m1);
-                const float t2 = readInterp (bufR, base + span * m2);
-                const float t3 = readInterp (bufR, base + span * m1);
-
-                wetL = (t0 * 0.62f + t1 * 0.38f);
-                wetR = (t2 * 0.62f + t3 * 0.38f);
+                wetL = readInterp (bufL, base + span * sweep (phase, fast))
+                     + readInterp (bufL, base + span * sweep (phase + third, fast)) * 0.45f;
+                wetR = readInterp (bufR, base - span * sweep (phase, fast))
+                     + readInterp (bufR, base - span * sweep (phase + third, fast)) * 0.45f;
             }
             else
             {
@@ -89,8 +113,8 @@ public:
             lpL += (wetL - lpL) * bbd;
             lpR += (wetR - lpR) * bbd;
 
-            l[i] = l[i] * (1.f - mix * 0.5f) + lpL * mix;
-            r[i] = r[i] * (1.f - mix * 0.5f) + lpR * mix;
+            l[i] = l[i] * (1.f - mix * dryCut) + lpL * mix * wetGain;
+            r[i] = r[i] * (1.f - mix * dryCut) + lpR * mix * wetGain;
 
             if (++w >= size) w = 0;
         }
@@ -110,8 +134,9 @@ private:
     std::vector<float> bufL, bufR;
     int size = 0, w = 0, mode = 0;
     float sr = 44100.f, phase = 0.f, phase2 = 0.f, inc = 0.f, inc2 = 0.f;
-    float depth = 0.3f, mix = 0.4f;
+    float depth = 0.3f, mix = 0.4f, wetGain = 1.f, dryCut = 0.5f;
     float lpL = 0.f, lpR = 0.f, bbd = 0.5f;
+    static constexpr float fastDepth = 0.32f;   // ENS second modulator, x span
 };
 
 // Stereo delay with feedback and gentle damping in the loop.

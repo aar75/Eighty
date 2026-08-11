@@ -44,10 +44,13 @@ namespace ui
     // bands because everything in it is a knob or a chip stack.
     constexpr int perfY   = engineY + engineH, perfH   = 120;   // 268
     constexpr int sharedY = perfY + perfH, sharedH = 180;       // 388
-    constexpr int seqY    = sharedY + sharedH, seqH    = 98;    // 568
-    constexpr int footerY = seqY + seqH,  footerH = 126;   // 666
-    constexpr int hintY   = footerY + footerH + 2;         // 794
-    constexpr int windowW = 1720, windowH = hintY + 20;    // 814
+    // Sequencer band: transport + tempo, the two track strips, the step grid,
+    // and under the grid a readout strip naming the pattern's scale and the
+    // tempo actually driving the step clock.
+    constexpr int seqY    = sharedY + sharedH, seqH    = 124;   // 568
+    constexpr int footerY = seqY + seqH,  footerH = 126;   // 692
+    constexpr int hintY   = footerY + footerH + 2;         // 820
+    constexpr int windowW = 1720, windowH = hintY + 20;    // 840
 }
 
 // ------------------------------------------------------------ LookAndFeel
@@ -409,8 +412,6 @@ private:
                      synthClearBtn { "x" };
     juce::OwnedArray<juce::TextButton> openBtns, removeBtns;
     juce::OwnedArray<juce::DocumentWindow> windows;
-    LearnSlider synthLevel;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> synthLevelAtt;
     int lastVersion = -1;
 };
 
@@ -467,11 +468,16 @@ private:
     void applyPreset (const juce::File&);
     void refreshPresetName();
 
-    // sequencer row: controls that live loose on the editor, not in a Section
+    // sequencer row / mixer: controls that live loose on the editor, not in
+    // a Section
     LedToggle*  makeLooseLed (const juce::String& paramID, const juce::String& label);
     ChipStack*  makeLooseChips (const juce::String& paramID, juce::StringArray labels,
                                 const juce::String& group, int cellW);
+    VFader*     makeLooseFader (const juce::String& paramID, const juce::String& label);
+    MiniKnob*   makeLooseKnob (const juce::String& paramID, const juce::String& label);
     void buildSeqRow();
+    void buildMixer();
+    void updateSeqReadout();
 
     EightyProcessor& proc;
     CreamLNF lnf;
@@ -516,6 +522,17 @@ private:
               *seqMuteLed[2] = { nullptr, nullptr };
     ChipStack *seqTrackChips = nullptr, *seqEngChips[2] = { nullptr, nullptr };
     juce::TextButton seqClearBtn { "CLEAR" }, seqCopyBtn { "COPY" };
+    MiniKnob* tempoKnob = nullptr;
+    juce::Label seqScaleLabel, seqTempoLabel;   // strip under the grid
+    // panel backgrounds painted behind loose controls, set in resized()
+    juce::Rectangle<int> seqStripArea, mixerArea;
+
+    // output mixer (footer, beside the plugin loader): CS-80 / JP-8 / VST3
+    // synth layer, each with a level fader, mute and solo
+    static constexpr int kMixStrips = 3;
+    VFader*    mixFader[kMixStrips] = {};
+    LedToggle* mixMute[kMixStrips]  = {};
+    LedToggle* mixSolo[kMixStrips]  = {};
 
     // preset bar
     juce::TextButton presetPrevBtn { "<" }, presetNextBtn { ">" },

@@ -479,6 +479,23 @@ void EightyProcessor::updateParameters()
     else
         vp.csGain = vp.jpGain = 1.f;
 
+    // Output mixer, on top of the balance: a level per sound source with
+    // mute and solo. Solo anywhere silences every strip that is not soloed.
+    // The engine gains are smoothed per voice at control rate, so a mute is
+    // a fast fade rather than a click.
+    {
+        const bool anySolo = rawVal (ID::csSolo)    > 0.5f
+                          || rawVal (ID::jpSolo)    > 0.5f
+                          || rawVal (ID::synthSolo) > 0.5f;
+        auto strip = [anySolo] (float level, float mute, float solo)
+        { return (mute > 0.5f || (anySolo && solo < 0.5f)) ? 0.f : level; };
+
+        vp.csGain *= strip (rawVal (ID::csLevel), rawVal (ID::csMute), rawVal (ID::csSolo));
+        vp.jpGain *= strip (rawVal (ID::jpLevel), rawVal (ID::jpMute), rawVal (ID::jpSolo));
+        synthGain  = strip (rawVal (ID::synthLevel), rawVal (ID::synthMute),
+                            rawVal (ID::synthSolo));
+    }
+
     vp.drift        = rawVal (ID::drift);
     vp.stereoSpread = rawVal (ID::stereoSpread);
     vp.glide[modelCS80].time = rawVal (ID::csGlideTime);
@@ -498,8 +515,6 @@ void EightyProcessor::updateParameters()
     es.bendRange    = (int) rawVal (ID::bendRange);
 
     es.arpMode    = (int) rawVal (ID::arpMode);
-    es.arpSync    = rawVal (ID::arpSync) > 0.5f;
-    es.arpRateHz  = rawVal (ID::arpRateHz);
     es.arpDiv     = (int) rawVal (ID::arpDiv);
     es.arpOctaves = (int) rawVal (ID::arpOctaves);
     es.arpGate    = rawVal (ID::arpGate);
@@ -521,7 +536,18 @@ void EightyProcessor::updateParameters()
     es.lfoWave  = (int) rawVal (ID::lfoWave);
     es.lfoDelay = rawVal (ID::lfoDelay);
     es.pwmRate  = rawVal (ID::pwmRate);
-    es.bpm      = hostBpm;
+
+    // Tempo: the panel TEMPO drives the arp, the sequencer and the synced
+    // delay. SYNC hands that over to the host, but only when the host really
+    // reports a tempo - in a standalone build there is none, and the knob
+    // silently doing nothing would be the wrong answer.
+    {
+        const bool followHost = rawVal (ID::arpSync) > 0.5f && hostBpmValid;
+        curBpm  = followHost ? hostBpm : (double) rawVal (ID::tempo);
+        es.bpm  = curBpm;
+        uiBpm.store ((float) curBpm);
+        uiBpmFromHost.store (followHost);
+    }
 
     // edge-detected toggles
     // Arp and the step sequencer both want the step clock, so whichever
@@ -637,10 +663,11 @@ void EightyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
 
+    hostBpmValid = false;
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())
             if (auto bpm = pos->getBpm())
-                hostBpm = *bpm;
+                if (*bpm > 1.0) { hostBpm = *bpm; hostBpmValid = true; }
 
     updateParameters();
 
@@ -698,9 +725,9 @@ void EightyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             juce::AudioBuffer<float> sb (synthBuf.getArrayOfWritePointers(), 2, total);
             sb.clear();
             synthLayer->processBlock (sb, midiEcho);
-            const float lvl = rawVal (ID::synthLevel);
-            buffer.addFrom (0, 0, sb, 0, 0, total, lvl);
-            buffer.addFrom (1, 0, sb, 1, 0, total, lvl);
+            buffer.addFromWithRamp (0, 0, sb.getReadPointer (0), total, lastSynthGain, synthGain);
+            buffer.addFromWithRamp (1, 0, sb.getReadPointer (1), total, lastSynthGain, synthGain);
+            lastSynthGain = synthGain;
         }
     }
 
@@ -714,10 +741,10 @@ void EightyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     if (rawVal (ID::delayOn) > 0.5f)
     {
         float time = rawVal (ID::delayTime);
-        if (rawVal (ID::delaySync) > 0.5f && hostBpm > 1.0)
+        if (rawVal (ID::delaySync) > 0.5f && curBpm > 1.0)
         {
             static const double beats[] = { 4.0, 2.0, 1.0, 1.5, 0.5, 0.75, 1.0/3.0, 0.25 };
-            time = (float) (beats[(int) rawVal (ID::delayDiv)] * 60.0 / hostBpm);
+            time = (float) (beats[(int) rawVal (ID::delayDiv)] * 60.0 / curBpm);
         }
         delay.setParams (time, rawVal (ID::delayFB), rawVal (ID::delayMix));
         delay.process (left, right, total);

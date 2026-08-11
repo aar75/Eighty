@@ -120,11 +120,15 @@ namespace ID
     inline constexpr const char* bendRange    = "bendRange";
     inline constexpr const char* hold         = "hold";
 
+    // Tempo. One BPM value drives the arpeggiator, the step sequencer and the
+    // synced delay; arpSync makes it follow the host instead, when the host
+    // actually reports a tempo (a standalone build never does).
+    inline constexpr const char* tempo      = "tempo";
+
     // Arpeggiator
     inline constexpr const char* arpOn      = "arpOn";
     inline constexpr const char* arpMode    = "arpMode";
     inline constexpr const char* arpSync    = "arpSync";
-    inline constexpr const char* arpRateHz  = "arpRateHz";
     inline constexpr const char* arpDiv     = "arpDiv";
     inline constexpr const char* arpOctaves = "arpOctaves";
     inline constexpr const char* arpGate    = "arpGate";
@@ -169,7 +173,19 @@ namespace ID
     inline constexpr const char* splitPoint = "splitPoint";
     inline constexpr const char* splitCsLow = "splitCsLow";   // CS on the low side?
     inline constexpr const char* engineBalance = "engineBalance"; // CS <-> JP mix
+
+    // Output mixer: one strip per sound source (CS-80 card, JP-8 card and the
+    // hosted VST3 synth layer). Solo anywhere mutes every strip that is not
+    // soloed, as on a desk.
+    inline constexpr const char* csLevel    = "csLevel";
+    inline constexpr const char* csMute     = "csMute";
+    inline constexpr const char* csSolo     = "csSolo";
+    inline constexpr const char* jpLevel    = "jpLevel";
+    inline constexpr const char* jpMute     = "jpMute";
+    inline constexpr const char* jpSolo     = "jpSolo";
     inline constexpr const char* synthLevel = "synthLevel";   // hosted VST3 synth layer
+    inline constexpr const char* synthMute  = "synthMute";
+    inline constexpr const char* synthSolo  = "synthSolo";
 
     // Jupiter-8 voice card
     inline constexpr const char* jpVco1Wave  = "jpVco1Wave";
@@ -347,13 +363,15 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<Pi>(ID::bendRange, "Bend Range", 1, 24, 2));
     p.push_back(std::make_unique<Pb>(ID::hold, "Hold", false));
 
+    // Tempo (drives the arp, the sequencer and the synced delay)
+    p.push_back(std::make_unique<P>(ID::tempo, "Tempo",
+        NormalisableRange<float>(20.f, 300.f, 0.1f), 120.f));
+
     // Arp
     p.push_back(std::make_unique<Pb>(ID::arpOn, "Arp On", false));
     p.push_back(std::make_unique<Pc>(ID::arpMode, "Arp Mode",
         StringArray { "Up", "Down", "Up-Down", "Random", "As Played" }, 0));
     p.push_back(std::make_unique<Pb>(ID::arpSync, "Arp Sync", true));
-    p.push_back(std::make_unique<P>(ID::arpRateHz, "Arp Rate",
-        NormalisableRange<float>(0.5f, 20.f, 0.f, 0.5f), 5.f));
     p.push_back(std::make_unique<Pc>(ID::arpDiv, "Arp Div",
         StringArray { "1/1", "1/2", "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32" }, 5));
     p.push_back(std::make_unique<Pi>(ID::arpOctaves, "Arp Octaves", 1, 4, 1));
@@ -406,7 +424,17 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<Pi>(ID::splitPoint, "Split Point", 36, 84, 60));
     p.push_back(std::make_unique<Pb>(ID::splitCsLow, "CS Low", true));
     p.push_back(std::make_unique<P>(ID::engineBalance, "CS/JP Mix", pct, 0.5f));
+
+    // Output mixer
+    p.push_back(std::make_unique<P>(ID::csLevel, "CS Level", pct, 1.f));
+    p.push_back(std::make_unique<Pb>(ID::csMute, "CS Mute", false));
+    p.push_back(std::make_unique<Pb>(ID::csSolo, "CS Solo", false));
+    p.push_back(std::make_unique<P>(ID::jpLevel, "JP Level", pct, 1.f));
+    p.push_back(std::make_unique<Pb>(ID::jpMute, "JP Mute", false));
+    p.push_back(std::make_unique<Pb>(ID::jpSolo, "JP Solo", false));
     p.push_back(std::make_unique<P>(ID::synthLevel, "Synth Level", pct, 0.8f));
+    p.push_back(std::make_unique<Pb>(ID::synthMute, "Synth Mute", false));
+    p.push_back(std::make_unique<Pb>(ID::synthSolo, "Synth Solo", false));
 
     // Jupiter-8
     StringArray jpFeet { "16'", "8'", "4'", "2'" };

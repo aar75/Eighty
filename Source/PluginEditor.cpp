@@ -1,5 +1,7 @@
 #include "PluginEditor.h"
 #include <map>
+#include <algorithm>
+#include <limits>
 
 namespace
 {
@@ -153,9 +155,11 @@ juce::String tipFor (const juce::String& id)
         { ID::seqALen,   "Loop length of track A. Different lengths per track give polymeter" },
         { ID::seqBLen,   "Loop length of track B. Different lengths per track give polymeter" },
         { ID::arpMode,   "Note order. 'PLY' plays your held notes in order, like a step sequencer" },
-        { ID::arpSync,   "Sync the rate to the host tempo" },
-        { ID::arpRateHz, "Free-running rate, used when Sync is off" },
-        { ID::arpDiv,    "Note division, used when Sync is on" },
+        { ID::arpSync,   "Follow the host's tempo instead of the panel TEMPO. A standalone build "
+                         "has no host tempo, so TEMPO keeps working there either way" },
+        { ID::tempo,     "Tempo for the arpeggiator, the sequencer and the synced delay, in BPM. "
+                         "The step length is this against the DIV note division" },
+        { ID::arpDiv,    "Note division: how long one arp or sequencer step is against the tempo" },
         { ID::arpOctaves,"Repeat the pattern across extra octaves" },
         { ID::arpGate,   "Note length within each step" },
         { ID::chorusOn,    "Bucket-brigade style stereo chorus" },
@@ -184,7 +188,15 @@ juce::String tipFor (const juce::String& id)
         { ID::splitPoint, "Split key: notes below and above route to different engines (Split mode)" },
         { ID::splitCsLow, "CS-80 takes the low side of the split (off = JP-8 low)" },
         { ID::engineBalance, "Balance the CS-80 and JP-8 engines (Split & Layer modes). Center = both full" },
+        { ID::csLevel,    "Output level of the CS-80 card" },
+        { ID::csMute,     "Silence the CS-80 card" },
+        { ID::csSolo,     "Solo the CS-80 card: everything not soloed goes quiet" },
+        { ID::jpLevel,    "Output level of the JP-8 card" },
+        { ID::jpMute,     "Silence the JP-8 card" },
+        { ID::jpSolo,     "Solo the JP-8 card: everything not soloed goes quiet" },
         { ID::synthLevel, "Level of the hosted VST3 synth layer" },
+        { ID::synthMute,  "Silence the hosted VST3 synth layer" },
+        { ID::synthSolo,  "Solo the synth layer: everything not soloed goes quiet" },
         { ID::jpVco1Wave,  "VCO1 waveform" },
         { ID::jpVco1Range, "VCO1 octave range (16' lowest, 2' highest)" },
         { ID::jpPW,        "Pulse width for both VCOs (50% = square)" },
@@ -240,8 +252,10 @@ juce::String shortValueText (const juce::String& id, double val)
         return v >= 1000.f ? juce::String (v / 1000.f, 1) + "k"
                            : juce::String (v, v < 10.f ? 1 : 0) + "Hz";
 
-    if (in ({ ID::lfoRate, ID::pwmRate, ID::arpRateHz, ID::chorusRate, ID::tremRate }))
+    if (in ({ ID::lfoRate, ID::pwmRate, ID::chorusRate, ID::tremRate }))
         return juce::String (v, 1) + "Hz";
+
+    if (id == ID::tempo) return juce::String (v, 1);
 
     if (in ({ ID::fEnvA, ID::fEnvD, ID::fEnvR, ID::aEnvA, ID::aEnvD, ID::aEnvR,
               ID::jpFEnvA, ID::jpFEnvD, ID::jpFEnvR, ID::jpAEnvA, ID::jpAEnvD, ID::jpAEnvR,
@@ -280,10 +294,96 @@ juce::String shortValueText (const juce::String& id, double val)
               ID::arpOctaves, ID::seqALen, ID::seqBLen }))
         return juce::String ((int) std::round (v));
 
-    if (id == ID::stereoWidth)
+    if (in ({ ID::stereoWidth, ID::csLevel, ID::jpLevel, ID::synthLevel }))
         return juce::String ((int) std::round (v * 100.f)) + "%";
 
     return juce::String (v, 2);
+}
+
+// ======================================================== scale detection
+// Names the most common scale that contains the notes in the sequencer.
+// Every root x family is scored and the best wins, compared in this order:
+//
+//   1. how much of the pattern the scale actually contains (weighted by how
+//      often each pitch class is played) - a scale that misses a note is
+//      always worse than one that does not;
+//   2. how tightly it fits: a five-note pentatonic beats the major scale
+//      that also happens to contain the same five notes;
+//   3. whether the root is the note the pattern leans on. This is what
+//      settles the relative-major ambiguity - the same seven notes read as
+//      C major or A minor, and which one you meant is in the bass;
+//   4. how common the family is, for anything still tied.
+struct ScaleFamily { const char* name; int size; int steps[7]; };
+
+static const ScaleFamily kFamilies[] = {
+    { "MAJOR",       7, { 0, 2, 4, 5, 7, 9, 11 } },
+    { "MINOR",       7, { 0, 2, 3, 5, 7, 8, 10 } },
+    { "DORIAN",      7, { 0, 2, 3, 5, 7, 9, 10 } },
+    { "MIXOLYDIAN",  7, { 0, 2, 4, 5, 7, 9, 10 } },
+    { "LYDIAN",      7, { 0, 2, 4, 6, 7, 9, 11 } },
+    { "PHRYGIAN",    7, { 0, 1, 3, 5, 7, 8, 10 } },
+    { "LOCRIAN",     7, { 0, 1, 3, 5, 6, 8, 10 } },
+    { "HARM MINOR",  7, { 0, 2, 3, 5, 7, 8, 11 } },
+    { "MEL MINOR",   7, { 0, 2, 3, 5, 7, 9, 11 } },
+    { "MAJ PENT",    5, { 0, 2, 4, 7, 9, 0, 0 } },
+    { "MIN PENT",    5, { 0, 3, 5, 7, 10, 0, 0 } },
+    { "BLUES",       6, { 0, 3, 5, 6, 7, 10, 0 } },
+    { "WHOLE TONE",  6, { 0, 2, 4, 6, 8, 10, 0 } },
+};
+
+struct ScaleFit
+{
+    juce::String name;      // empty when there is nothing to name
+    bool exact = true;      // false if the pattern spills outside the scale
+    int distinct = 0;       // distinct pitch classes in the pattern
+    int covered = 0;        // how many of them the named scale contains
+};
+
+// weights[pc] = how often that pitch class is played; strongest / lowest are
+// the pitch classes of the most-played and the lowest-sounding note.
+ScaleFit analyseScale (const int (&weights)[12], int strongestPc, int lowestPc)
+{
+    ScaleFit fit;
+    for (int pc = 0; pc < 12; ++pc)
+        if (weights[pc] > 0) ++fit.distinct;
+
+    // One pitch class is a note, not a key - naming a scale off it would be
+    // an invention rather than a reading.
+    if (fit.distinct < 2) return fit;
+
+    int best[4] = { std::numeric_limits<int>::max(), 0, 0, 0 };
+    for (int root = 0; root < 12; ++root)
+    {
+        const int rootRank = root == strongestPc ? (root == lowestPc ? 0 : 1)
+                                                 : (root == lowestPc ? 2 : 3);
+        for (int fi = 0; fi < (int) (sizeof (kFamilies) / sizeof (kFamilies[0])); ++fi)
+        {
+            const auto& fam = kFamilies[fi];
+            bool inScale[12] = {};
+            for (int s = 0; s < fam.size; ++s)
+                inScale[(root + fam.steps[s]) % 12] = true;
+
+            int missing = 0, covered = 0;
+            for (int pc = 0; pc < 12; ++pc)
+                if (weights[pc] > 0)
+                {
+                    if (inScale[pc]) ++covered;
+                    else             missing += weights[pc];
+                }
+
+            const int score[4] = { missing, fam.size, rootRank, fi };
+            if (std::lexicographical_compare (score, score + 4, best, best + 4))
+            {
+                std::copy (score, score + 4, best);
+                static const char* names[] = { "C", "C#", "D", "D#", "E", "F",
+                                               "F#", "G", "G#", "A", "A#", "B" };
+                fit.name = juce::String (names[root]) + " " + fam.name;
+                fit.exact = missing == 0;
+                fit.covered = covered;
+            }
+        }
+    }
+    return fit;
 }
 } // namespace
 
@@ -1608,17 +1708,9 @@ InsertPanel::InsertPanel (EightyProcessor& p, std::function<void (const juce::St
     };
     addChildComponent (synthClearBtn);
 
-    synthLevel.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    synthLevel.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-    synthLevel.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f,
-                                    juce::MathConstants<float>::pi * 2.75f, true);
-    synthLevel.setWantsKeyboardFocus (false);
-    synthLevel.setTooltip (tipFor (ID::synthLevel));
-    synthLevelAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
-        proc.apvts, ID::synthLevel, synthLevel);
-    // hook the readout only after the attachment's initial update has run
-    synthLevel.onValueChange = [touched] { if (touched) touched (ID::synthLevel); };
-    addAndMakeVisible (synthLevel);
+    // The synth layer's level, mute and solo live in the mixer card next
+    // door now, alongside the two engines they are balanced against.
+    juce::ignoreUnused (touched);
 
     startTimerHz (10);
     refresh();
@@ -1701,7 +1793,6 @@ void InsertPanel::resized()
     b.removeFromTop (12);
     auto synthRow = b.removeFromTop (20);
     synthClearBtn.setBounds (synthRow.removeFromRight (20).reduced (1));
-    synthLevel.setBounds (synthRow.removeFromRight (22));
     synthBtn.setBounds (synthRow.reduced (1));
 
     b.removeFromTop (13);
@@ -2021,7 +2112,8 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeLed   (secArp, ID::arpSync, "SYNC");
     makeChips (secArp, ID::arpMode, { "UP", "DN", "UD", "RND", "PLY" }, "MODE", 44);
     makeChips (secArp, ID::arpDiv, { "1/1", "1/2", "1/4", "1/8", "8T", "1/16", "16T", "1/32" }, "DIV", 44);
-    makeKnob  (secArp, ID::arpRateHz, "RATE", 33);
+    // The rate itself is now TEMPO, in the sequencer row: the arp and the
+    // sequencer share one step clock, so there is one place to set it.
     makeKnob  (secArp, ID::arpOctaves, "OCT", 33);
     makeKnob  (secArp, ID::arpGate, "GATE", 33);
     addAndMakeVisible (secArp);
@@ -2073,6 +2165,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     addAndMakeVisible (secFx);
 
     buildSeqRow();
+    buildMixer();
     buildPresetBar();
 
     addAndMakeVisible (scope);
@@ -2107,6 +2200,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
 
     setEngineView (false);
     updateModeVisibility ((int) proc.apvts.getRawParameterValue (ID::engineMode)->load());
+    updateSeqReadout();            // so the strip is filled before the first tick
     setWantsKeyboardFocus (true);
     addKeyListener (this);
     startTimerHz (30);
@@ -2397,12 +2491,72 @@ ChipStack* EightyEditor::makeLooseChips (const juce::String& paramID, juce::Stri
     return c;
 }
 
-// ---- sequencer row: transport, per-track strip and the step grid
+VFader* EightyEditor::makeLooseFader (const juce::String& paramID, const juce::String& label)
+{
+    auto* f = new VFader (label);
+    owned.add (f);
+    sliderAtts.add (new juce::AudioProcessorValueTreeState::SliderAttachment (
+        proc.apvts, paramID, f->slider));
+    if (auto* param = proc.apvts.getParameter (paramID))
+        f->slider.setDoubleClickReturnValue (true,
+            param->convertFrom0to1 (param->getDefaultValue()));
+    f->slider.onRightClick = [this, paramID] (juce::Point<int> pos)
+    { showLearnMenu (paramID, pos); };
+    wireSlider (f->slider, f->value, paramID);
+    const auto tip = tipFor (paramID);
+    f->setTooltip (tip);
+    f->slider.setTooltip (tip);
+    controls.push_back ({ f, paramID });
+    f->addMouseListener (this, true);
+    addAndMakeVisible (f);
+    return f;
+}
+
+MiniKnob* EightyEditor::makeLooseKnob (const juce::String& paramID, const juce::String& label)
+{
+    auto* k = new MiniKnob (label);
+    owned.add (k);
+    sliderAtts.add (new juce::AudioProcessorValueTreeState::SliderAttachment (
+        proc.apvts, paramID, k->slider));
+    if (auto* param = proc.apvts.getParameter (paramID))
+        k->slider.setDoubleClickReturnValue (true,
+            param->convertFrom0to1 (param->getDefaultValue()));
+    k->slider.onRightClick = [this, paramID] (juce::Point<int> pos)
+    { showLearnMenu (paramID, pos); };
+    wireSlider (k->slider, k->value, paramID);
+    const auto tip = tipFor (paramID);
+    k->setTooltip (tip);
+    k->slider.setTooltip (tip);
+    controls.push_back ({ k, paramID });
+    k->addMouseListener (this, true);
+    addAndMakeVisible (k);
+    return k;
+}
+
+// ---- sequencer row: transport, tempo, per-track strip and the step grid
 void EightyEditor::buildSeqRow()
 {
     seqRecLed  = makeLooseLed (ID::seqRec, "REC");
     seqPlayLed = makeLooseLed (ID::seqPlay, "PLAY");
     seqTrackChips = makeLooseChips (ID::seqTrack, { "A", "B" }, {}, 26);
+
+    // The step clock is shared with the arp, so its tempo lives here where
+    // the pattern you are timing is visible.
+    tempoKnob = makeLooseKnob (ID::tempo, "TEMPO");
+
+    // Readout strip under the grid, in the LCD idiom: what key the pattern
+    // is in on the left, what is actually driving the clock on the right.
+    for (auto* lab : { &seqScaleLabel, &seqTempoLabel })
+    {
+        auto f = ui::mono (10.f);
+        f.setExtraKerningFactor (0.06f);
+        lab->setFont (f);
+        lab->setColour (juce::Label::textColourId, ui::scopeTrace);
+        lab->setInterceptsMouseClicks (false, false);
+        addAndMakeVisible (*lab);
+    }
+    seqScaleLabel.setJustificationType (juce::Justification::centredLeft);
+    seqTempoLabel.setJustificationType (juce::Justification::centredRight);
 
     seqMuteLed[0] = makeLooseLed (ID::seqAMute, "MUTE");
     seqMuteLed[1] = makeLooseLed (ID::seqBMute, "MUTE");
@@ -2444,6 +2598,76 @@ void EightyEditor::buildSeqRow()
         proc.markPresetEdited();
     };
     addAndMakeVisible (seqGrid);
+}
+
+// ---- output mixer: one strip per sound source, beside the plugin loader
+void EightyEditor::buildMixer()
+{
+    static const struct { const char* level; const char* mute; const char* solo;
+                          const char* name; } strips[kMixStrips] = {
+        { ID::csLevel,    ID::csMute,    ID::csSolo,    "CS-80" },
+        { ID::jpLevel,    ID::jpMute,    ID::jpSolo,    "JP-8"  },
+        { ID::synthLevel, ID::synthMute, ID::synthSolo, "SYNTH" },
+    };
+
+    for (int i = 0; i < kMixStrips; ++i)
+    {
+        mixFader[i] = makeLooseFader (strips[i].level, strips[i].name);
+        mixMute[i]  = makeLooseLed (strips[i].mute, "M");
+        mixSolo[i]  = makeLooseLed (strips[i].solo, "S");
+    }
+}
+
+// The pattern's key and the clock actually driving it. Recomputed on the
+// 30 Hz timer: the pattern is edited from the grid, loaded with a preset and
+// written by step record, so there is no single place to hook a change from.
+void EightyEditor::updateSeqReadout()
+{
+    int weights[12] = {};
+    int lowest = 128, strongestPc = -1, bestWeight = 0;
+
+    for (int t = 0; t < eighty::SynthEngine::StepSeq::kTracks; ++t)
+    {
+        const auto& track = proc.engine.seq.tracks[(size_t) t];
+        const int len = juce::jlimit (1, eighty::SynthEngine::SeqTrack::kSteps, track.length);
+        for (int s = 0; s < len; ++s)
+        {
+            const auto& step = track.steps[(size_t) s];
+            const int n = juce::jmin ((int) step.count, eighty::SynthEngine::SeqStep::kMaxNotes);
+            for (int i = 0; i < n; ++i)
+            {
+                const int note = juce::jlimit (0, 127, (int) step.note[i]);
+                ++weights[note % 12];
+                lowest = juce::jmin (lowest, note);
+            }
+        }
+    }
+    for (int pc = 0; pc < 12; ++pc)
+        if (weights[pc] > bestWeight) { bestWeight = weights[pc]; strongestPc = pc; }
+
+    const auto fit = analyseScale (weights, strongestPc, lowest < 128 ? lowest % 12 : -1);
+
+    juce::String scale ("SCALE  ");
+    if (fit.name.isEmpty())
+        scale << (fit.distinct == 0 ? "-  EMPTY PATTERN" : "-  ONE NOTE");
+    else
+    {
+        scale << (fit.exact ? "" : "~") << fit.name
+              << "   " << fit.distinct << (fit.distinct == 1 ? " NOTE" : " NOTES");
+        if (! fit.exact)
+            scale << ", " << fit.covered << " IN KEY";
+    }
+    seqScaleLabel.setText (scale, juce::dontSendNotification);
+
+    static const char* divNames[] = { "1/1", "1/2", "1/4", "1/8", "1/8T",
+                                      "1/16", "1/16T", "1/32" };
+    const int div = juce::jlimit (0, 7,
+        (int) proc.apvts.getRawParameterValue (ID::arpDiv)->load());
+    const float bpm = proc.uiBpm.load();
+    seqTempoLabel.setText (juce::String (divNames[div]) + " STEPS AT "
+                           + juce::String (bpm, 1) + " BPM  "
+                           + (proc.uiBpmFromHost.load() ? "[HOST]" : "[PANEL]"),
+                           juce::dontSendNotification);
 }
 
 MiniDisplay* EightyEditor::makeDisplay (Section& s, MiniDisplay::Kind kind,
@@ -2695,6 +2919,23 @@ void EightyEditor::paint (juce::Graphics& g)
         const int row1 = row0 + SeqGrid::rowH + SeqGrid::rowGap;
         g.drawText ("TRACK A", 212, row0 + 1, 70, 10, juce::Justification::centredLeft);
         g.drawText ("TRACK B", 212, row1 + 1, 70, 10, juce::Justification::centredLeft);
+
+        // dark panel behind the scale / step-clock readout, matching the LCD
+        g.setColour (ui::scopeBg);
+        g.fillRoundedRectangle (seqStripArea.toFloat(), 3.f);
+    }
+
+    // mixer card in the footer, in the insert panel's idiom
+    {
+        auto r = mixerArea.toFloat().reduced (0.5f);
+        g.setColour (ui::cardBg);
+        g.fillRoundedRectangle (r, 4.f);
+        g.setColour (ui::line);
+        g.drawRoundedRectangle (r, 4.f, 1.f);
+        g.setColour (ui::dim);
+        g.setFont (ui::sans (8.5f, true));
+        g.drawText ("MIXER", mixerArea.getX() + 10, mixerArea.getY() + 4, 120, 10,
+                    juce::Justification::centredLeft);
     }
 
     // preset bar caption
@@ -2809,6 +3050,9 @@ void EightyEditor::resized()
         seqTrackChips->setBounds (48, sy + 50, 2 * 26 + 1, 16);
         seqClearBtn.setBounds (14, sy + 72, 52, 16);
         seqCopyBtn.setBounds (72, sy + 72, 52, 16);
+        // 56 wide gives a 50px knob, and MiniKnob needs knob + 42 in height
+        // for its caption and value readout to clear the bottom
+        tempoKnob->setBounds (134, sy + 8, 56, 92);
 
         const int gridTop = sy + 10;
         const int rowY[2] = { gridTop + SeqGrid::rulerH,
@@ -2820,7 +3064,15 @@ void EightyEditor::resized()
         }
 
         const int gridX = 386;
-        seqGrid.setBounds (gridX, gridTop, getWidth() - 14 - gridX, SeqGrid::preferredHeight());
+        const int gridW = getWidth() - 14 - gridX;
+        seqGrid.setBounds (gridX, gridTop, gridW, SeqGrid::preferredHeight());
+
+        // readout strip: scale on the left, step clock on the right, sharing
+        // one dark panel drawn behind them
+        const int stripY = gridTop + SeqGrid::preferredHeight() + 5;
+        seqStripArea = { gridX, stripY, gridW, 18 };
+        seqScaleLabel.setBounds (gridX + 10, stripY, gridW / 2 - 12, 18);
+        seqTempoLabel.setBounds (gridX + gridW / 2, stripY, gridW / 2 - 10, 18);
     }
 
     // ---- footer
@@ -2829,8 +3081,27 @@ void EightyEditor::resized()
     wheel.setBounds (14, fy, 44, fb - fy);
     const int insertW = 262;
     insertPanel.setBounds (getWidth() - 14 - insertW, fy, insertW, fb - fy);
+
+    // Mixer card, immediately left of the plugin loader: three strips, each
+    // a fader with M/S under it.
+    const int mixW = 192, mixX = getWidth() - 14 - insertW - 8 - mixW;
+    mixerArea = { mixX, fy, mixW, fb - fy };
+    {
+        const int colW = (mixW - 16) / kMixStrips;
+        for (int i = 0; i < kMixStrips; ++i)
+        {
+            const int cx = mixX + 8 + i * colW;
+            mixFader[i]->setBounds (cx, fy + 14, colW, 80);
+            const int mw = mixMute[i]->preferredWidth() + 4;
+            const int sw = mixSolo[i]->preferredWidth() + 4;
+            const int left = cx + (colW - (mw + 6 + sw)) / 2;
+            mixMute[i]->setBounds (left, fy + 96, mw, 14);
+            mixSolo[i]->setBounds (left + mw + 6, fy + 96, sw, 14);
+        }
+    }
+
     const int kbX = 14 + 44 + 8;
-    const int kbW = getWidth() - 14 - insertW - 8 - kbX;
+    const int kbW = mixX - 8 - kbX;
     zoneStrip->setBounds (kbX, fy, kbW, 14);
     keyboard.setBounds (kbX, fy + 16, kbW, fb - (fy + 16));
     keyboard.setKeyWidth ((float) kbW / 36.f);
@@ -2944,6 +3215,7 @@ void EightyEditor::timerCallback()
 
     tickAdjustRamp();
     refreshPresetName();           // tracks host automation and preset loads
+    updateSeqReadout();
 
     if (proc.engine.seqPlay || proc.engine.seqRec)
         seqGrid.repaint();         // playhead / cursor
