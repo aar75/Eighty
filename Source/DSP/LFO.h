@@ -12,6 +12,8 @@ public:
     enum Wave { sine = 0, triangle, square, saw, sampleHold };
 
     void prepare (double sampleRate) { sr = (float) sampleRate; noise.seed (0xC0FFEE); }
+    // Rate-only update, for when the oversampling factor changes under us
+    void setSampleRate (double sampleRate) { sr = (float) sampleRate; }
 
     void setRate (float hz) { inc = hz / sr; }
     void setWave (int w)    { wave = (Wave) w; }

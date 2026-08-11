@@ -43,9 +43,33 @@ Built plugins are copied to `~/Library/Audio/Plug-Ins/{VST3,Components}`.
   saw + variable-width pulse simultaneously (mixable, PolyBLEP anti-aliased),
   with 32'/16'/8'/4' ranges, detune, and per-channel PWM depth from a
   dedicated PWM LFO.
+- **Two complete channels** — the real CS-80 is two 8-voice synths in one
+  chassis: each channel has its own filter, VCA and envelope generators, and
+  the two layers moving independently is what makes its brass and strings
+  work. Rather than duplicate the whole panel, channel II runs the *same*
+  settings offset by four controls in the **CH II** section (cutoff, res,
+  env amount, envelope speed ratio). All-zero is a single shared filter.
 - **Filter** — the CS-80's series topology: 12 dB/oct high-pass into a
-  12 dB/oct resonant low-pass (TPT state-variable filters), with a
-  soft-saturating drive stage.
+  12 dB/oct low-pass (TPT state-variable filters), **resonant on both** —
+  open the HPF against a closed LPF for its bandpass, chime and vocal
+  patches — with a soft-saturating drive stage. Deliberately cannot
+  self-oscillate: Yamaha put limiting resistors in the resonance path.
+- **Filter envelope is IL/AL/A/D/R, not ADSR** — it starts from an Initial
+  Level and attacks to an Attack Level. Raising IL shortens the sweep and
+  dulls the tone; lowering it enriches it.
+- **A sine that bypasses the filters**, joining at the VCA mixer — a sine has
+  no harmonics for a filter to work on, so filtering it would only cost
+  level. It is why CS-80 pads keep a fundamental under a closed filter.
+- **Touch Response initial pitch bend** (V.BEND in PERFORM) — a hard key
+  strike slides up into the note from just below, the way a brass player's
+  embouchure does. Arguably the most recognisable thing the instrument does.
+- **BRILLIANCE and RESONANCE performance macros** — one offset over every
+  filter cutoff in the instrument and one over every resonance, on top of
+  whatever the patch says. The two most-used sliders on a real CS-80.
+- **Ring modulator** — a sine carrier with its own attack/decay envelope,
+  where the envelope also drives the carrier's *speed*. Deliberately not
+  keyboard-tracked: that fixed pitch beating against the note is where the
+  inharmonic, metallic character comes from. Offered to both engines.
 - **Single global LFO ("sub oscillator")** routed to pitch / filter / amp,
   with a delay/fade-in — shared by all voices, as on the original.
 - **Touch section** — the CS-80 is famous for polyphonic aftertouch. Real
@@ -56,17 +80,32 @@ Built plugins are copied to `~/Library/Audio/Plug-Ins/{VST3,Components}`.
   seeded component tolerances (pitch, cutoff, envelope speed, pulse width,
   level, pan) plus a slow random pitch walk, scaled by one knob. Voices are
   also panned per-card (odd/even left/right) via Spread.
-- **Ring modulator and ribbon are intentionally omitted** (ribbon scrapped by
-  design; ring mod left out to keep the panel light).
+- **The ribbon controller is intentionally omitted** (scrapped by design —
+  it does not map to a mouse or a computer keyboard).
 
 ## What's modeled from the Jupiter-8
 
 - **Two VCOs** — VCO1: tri/saw/pulse/square; VCO2: tri/saw/pulse/noise, with
   semitone/fine tune, 16'/8'/4'/2' ranges, **hard sync** (VCO2 to VCO1) and
-  **cross-mod** (VCO2 FMs VCO1), mixed with one balance knob.
-- **Filter** — non-resonant HPF into an IR3109-style resonant low-pass
-  switchable **12/24 dB/oct** (24 dB mode resonates harder, like the original).
-- Its own filter/amp ADSRs. Drift, touch, LFO, and FX apply to both engines.
+  **cross-mod** (VCO2 FMs VCO1), mixed with one balance knob. **LOW** drops
+  VCO2 out of keyboard tracking and runs it at LF, which is how most real
+  Jupiter-8 sync and cross-mod patches are built.
+- **Filter** — a gentle 6 dB/oct non-resonant HPF into a **four-stage ladder
+  low-pass with one global feedback path**, switched 12/24 dB by tapping
+  stage 2 or stage 4 — which is what the IR3109 actually does. This
+  topology, not the cutoff curve, is what separates a Jupiter-8 from the
+  CS-80's state-variable filter:
+  - A ladder loses DC gain as resonance rises, which is why a Minimoog thins
+    out when you crank it. Roland compensated by boosting the input back into
+    the chip, so the JP-8 keeps its body — the reason it gets called the
+    fattest of the classic Rolands. Measured here: cranking resonance to
+    maximum moves the low end **+1.0 dB** instead of the −14.6 dB an
+    uncompensated ladder would lose.
+  - Four stages reach 180° of phase, so **24 dB mode self-oscillates**. Two
+    stages never do, so **12 dB resonates but cannot howl** — matching the
+    real slope switch rather than bypassing a stage.
+- **ENV-1 polarity invert** for reverse sweeps and plucks, and its own
+  filter/amp ADSRs. Drift, touch, LFO, ring mod and FX apply to both engines.
 
 Both engines also get a **sub-oscillator** (in each panel's MIX section): a
 square or triangle one or two octaves below that engine's first oscillator,
@@ -123,11 +162,40 @@ stall). Files are `.eighty` XML in
 "Reveal folder" item. An asterisk after the name means you have edited it
 since it was loaded.
 
+## Render quality (oversampling)
+
+The **QUALITY** selector runs the whole voice pool at 2x, 4x or 8x the
+sample rate and decimates back down through cascaded halfband filters. It is
+there because filter drive, hard sync and cross-mod all generate harmonics
+above Nyquist that otherwise fold back into the audible band as fizz. Both
+filters' drive stages additionally use antiderivative anti-aliasing, which
+costs one log-cosh and a divide instead of a filter bank.
+
+Measured as energy below the fundamental — a bandlimited sawtooth has none,
+so anything down there is folded:
+
+| | CS-80, drive at max | JP-8, hard sync |
+| --- | --- | --- |
+| Off | −45.6 dB | −42.0 dB |
+| 2x | −51.8 dB | −46.3 dB |
+| 4x | −55.1 dB | −52.6 dB |
+| 8x | −61.2 dB | −60.2 dB |
+
+CPU scales roughly with the factor. 2x is the default. The decimation
+filters are linear phase, so the latency they cost (0 / 16 / 23 / 27
+samples) is reported to the host.
+
 ## Everything else
 
 Hold latch, arpeggiator with an "As Played" mode (sync or free-rate), pitch
-wheel (sprung), full MIDI learn (right-click any knob), chorus / delay /
-tremolo FX, output width control, velocity sensitivity, master tune/volume.
+wheel (sprung), full MIDI learn (right-click any knob), delay / tremolo FX,
+output width control, velocity sensitivity, master tune/volume.
+
+**Chorus** has three modes: **I** (wide and slow), **II** (faster and
+deeper) and **ENS** (three taps 120° apart — the thicker CS-80 ensemble
+rather than a chorus). The wet path is darker than the dry, because a BBD is
+a chain of sample-and-holds with a limited clock, and that roll-off is most
+of why an analog chorus sits behind the sound instead of on top of it.
 
 Two displays in the header: a triggered waveform trace, and a vector
 (lissajous) display rotated so mono draws a vertical line and stereo width
@@ -179,5 +247,7 @@ Mappings are saved with the plugin state.
 - `Source/DSP/Voice.h` — one voice card, playable as CS-80 or JP-8 per note
 - `Source/DSP/SynthEngine.h` — voice allocation, modes, hold, arp, step sequencer, split, global LFOs
 - `Source/DSP/CS80Filter.h`, `JP8Filter.h`, `Oscillator.h`, `Envelope.h`, `LFO.h`, `Effects.h`
+- `Source/DSP/Oversampling.h` — halfband decimator (coefficients designed at
+  runtime from a windowed sinc) and the ADAA saturator
 - `Source/PluginProcessor.*` — parameters, MIDI handling, MIDI learn, FX chain
 - `Source/PluginEditor.*` — flat UI, scope, pitch wheel, computer-key handling

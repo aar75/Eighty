@@ -65,16 +65,46 @@ juce::String tipFor (const juce::String& id)
         { ID::jpSubLevel,"Sub-oscillator level: weight under the JP-8 VCOs, into the filter" },
         { ID::jpSubOct,  "How far below VCO1 the sub sits: one or two octaves" },
         { ID::jpSubWave, "Sub waveform: square (hollow, Juno-ish) or triangle (rounder, less harmonic)" },
+        { ID::csSineLevel, "Sine level. Routed around the filters straight into the mixer, "
+                           "as on the CS-80 - keeps a fundamental under a closed filter" },
         { ID::hpfCutoff,   "High-pass cutoff: removes lows below this frequency (12 dB/oct)" },
         { ID::lpfCutoff,   "Low-pass cutoff: removes highs above this frequency (12 dB/oct)" },
         { ID::resonance,   "Resonance peak at the low-pass cutoff" },
+        { ID::hpfRes,      "Resonance on the high-pass too, as the CS-80 has. Open the HPF "
+                           "against a closed LPF for its bandpass, chime and vocal patches" },
         { ID::filterEnvAmt,"Filter envelope sweep amount (negative inverts the sweep)" },
         { ID::keyTrack,    "Cutoff follows keyboard position" },
         { ID::filterDrive, "Input saturation, for analog warmth" },
+        { ID::csCh2Cut,  "Channel II cutoff offset, in octaves. Channel II is a complete "
+                         "second synth with its own filter - offsetting it is what makes "
+                         "CS-80 brass and strings move" },
+        { ID::csCh2Res,  "Channel II resonance offset" },
+        { ID::csCh2Env,  "Channel II filter envelope amount, offset from channel I" },
+        { ID::csCh2Time, "Channel II envelope speed, as a ratio of channel I. Above 1 makes "
+                         "the second layer swell in behind the first" },
+        { ID::ringOn,     "Ring modulator on" },
+        { ID::ringDepth,  "Ring modulator depth: dry at 0, full multiplication at 1" },
+        { ID::ringRate,   "Carrier frequency. Deliberately not keyboard-tracked - that fixed "
+                          "pitch against the note is where the metallic character comes from" },
+        { ID::ringEnvAmt, "How far the ring envelope pushes the carrier's *speed* - the detail "
+                          "that makes it sound like the original rather than a multiplier" },
+        { ID::ringAtk,    "Ring envelope attack time" },
+        { ID::ringDec,    "Ring envelope decay time" },
+        { ID::brilliance, "Global cutoff offset over every filter in the instrument. The most "
+                          "useful control on a real CS-80" },
+        { ID::resOffset,  "Global resonance offset over every filter in the instrument" },
+        { ID::velBend,    "Touch Response initial pitch bend: a hard key strike slides up into "
+                          "the note from below, the way a brass player's embouchure does" },
+        { ID::oversample, "Render quality. The engine runs at this multiple of the sample rate, "
+                          "which keeps filter drive, hard sync and cross-mod from folding their "
+                          "own harmonics back down. Higher costs proportionally more CPU" },
+        { ID::fEnvIL, "Initial level: where the filter envelope starts from, rather than 0. "
+                      "Raising it shortens the sweep and dulls the tone (CS-80 IL)" },
         { ID::fEnvA, "Filter envelope attack time" },
         { ID::fEnvD, "Filter envelope decay time" },
         { ID::fEnvS, "Filter envelope sustain level" },
         { ID::fEnvR, "Filter envelope release time" },
+        { ID::fEnvAL, "Attack level: the peak the attack segment reaches (CS-80 AL)" },
         { ID::aEnvA, "Amp envelope attack time" },
         { ID::aEnvD, "Amp envelope decay time" },
         { ID::aEnvS, "Amp envelope sustain level" },
@@ -129,6 +159,8 @@ juce::String tipFor (const juce::String& id)
         { ID::arpOctaves,"Repeat the pattern across extra octaves" },
         { ID::arpGate,   "Note length within each step" },
         { ID::chorusOn,    "Bucket-brigade style stereo chorus" },
+        { ID::chorusMode,  "I: wide and slow. II: faster and deeper. ENS: three taps, the "
+                           "thicker CS-80 ensemble rather than a chorus" },
         { ID::chorusRate,  "Chorus sweep speed" },
         { ID::chorusDepth, "Chorus sweep depth" },
         { ID::chorusMix,   "Chorus wet amount" },
@@ -162,13 +194,19 @@ juce::String tipFor (const juce::String& id)
         { ID::jpVco2Range, "VCO2 octave range (16' lowest, 2' highest)" },
         { ID::jpVco2Semi,  "Transpose VCO2, in semitones" },
         { ID::jpVco2Fine,  "Fine tune VCO2, in cents" },
+        { ID::jpVco2Low,   "LOW: VCO2 stops tracking the keyboard and runs at LF, becoming a "
+                           "per-voice modulator for sync and cross-mod" },
         { ID::jpSync,      "Hard-sync VCO2 to VCO1: VCO2 restarts each VCO1 cycle" },
         { ID::jpXmod,      "Cross-mod: VCO2 frequency-modulates VCO1" },
-        { ID::jpHpf,       "Non-resonant high-pass cutoff" },
+        { ID::jpHpf,       "Non-resonant high-pass cutoff (6 dB/oct, as on the JP-8)" },
         { ID::jpLpf,       "Low-pass cutoff" },
-        { ID::jpRes,       "Low-pass resonance (bites harder in 24 dB mode)" },
-        { ID::jpSlope24,   "24 dB/oct filter slope (off = 12 dB/oct)" },
+        { ID::jpRes,       "Ladder resonance. 24 dB mode self-oscillates at the top; 12 dB "
+                           "resonates but cannot, exactly like the real slope switch" },
+        { ID::jpDrive,     "Ladder input drive: the OTA's soft clipping" },
+        { ID::jpSlope24,   "24 dB/oct filter slope, tapped from stage 4 (off = 12 dB/oct, "
+                           "tapped from stage 2 - what the IR3109 actually does)" },
         { ID::jpEnvAmt,    "Filter envelope sweep amount (negative inverts)" },
+        { ID::jpEnvInv,    "ENV-1 polarity: inverts the filter envelope for reverse sweeps" },
         { ID::jpKeyTrk,    "Cutoff follows keyboard position" },
         { ID::jpFEnvA, "Filter envelope attack time" },
         { ID::jpFEnvD, "Filter envelope decay time" },
@@ -198,11 +236,16 @@ juce::String shortValueText (const juce::String& id, double val)
         return v >= 1000.f ? juce::String (v / 1000.f, 1) + "k"
                            : juce::String ((int) std::round (v)) + "Hz";
 
+    if (id == ID::ringRate)
+        return v >= 1000.f ? juce::String (v / 1000.f, 1) + "k"
+                           : juce::String (v, v < 10.f ? 1 : 0) + "Hz";
+
     if (in ({ ID::lfoRate, ID::pwmRate, ID::arpRateHz, ID::chorusRate, ID::tremRate }))
         return juce::String (v, 1) + "Hz";
 
     if (in ({ ID::fEnvA, ID::fEnvD, ID::fEnvR, ID::aEnvA, ID::aEnvD, ID::aEnvR,
               ID::jpFEnvA, ID::jpFEnvD, ID::jpFEnvR, ID::jpAEnvA, ID::jpAEnvD, ID::jpAEnvR,
+              ID::ringAtk, ID::ringDec,
               ID::lfoDelay, ID::touchRise, ID::csGlideTime, ID::jpGlideTime, ID::delayTime }))
     {
         if (v < 0.0995f) return juce::String ((int) std::round (v * 1000.f)) + "ms";
@@ -225,8 +268,13 @@ juce::String shortValueText (const juce::String& id, double val)
     if (id == ID::splitPoint) return juce::MidiMessage::getMidiNoteName ((int) v, true, true, 3);
     if (id == ID::bendRange)  return juce::String ((int) std::round (v)) + "st";
 
-    if (in ({ ID::filterEnvAmt, ID::jpEnvAmt }))
+    if (in ({ ID::filterEnvAmt, ID::jpEnvAmt, ID::csCh2Res, ID::csCh2Env,
+              ID::ringEnvAmt, ID::brilliance, ID::resOffset }))
         return (v >= 0.005f ? "+" : "") + juce::String (v, 2);
+
+    if (id == ID::csCh2Cut)  return (v >= 0.005f ? "+" : "") + juce::String (v, 1) + "oct";
+    if (id == ID::csCh2Time) return juce::String (v, 2) + "x";
+    if (id == ID::velBend)   return juce::String (v, 2) + "st";
 
     if (in ({ ID::csPolyVoices, ID::csUnisonCount, ID::jpPolyVoices, ID::jpUnisonCount,
               ID::arpOctaves, ID::seqALen, ID::seqBLen }))
@@ -1836,12 +1884,15 @@ EightyEditor::EightyEditor (EightyProcessor& p)
 
     makeFader (secMix, ID::noiseLevel, "NOISE");
     makeFader (secMix, ID::csSubLevel, "SUB");
+    // The sine leaves the mixer *after* the filters, as on the original
+    makeFader (secMix, ID::csSineLevel, "SINE");
     makeChips (secMix, ID::csSubOct, { "-1", "-2" }, "OCT", 34);
     makeChips (secMix, ID::csSubWave, { "SQR", "TRI" }, "WAVE", 34);
     makeKnob  (secMix, ID::pwmRate, "PWM RT");
     addAndMakeVisible (secMix);
 
     makeFader (secFilter, ID::hpfCutoff, "HPF");
+    makeFader (secFilter, ID::hpfRes, "H.RES");
     makeFader (secFilter, ID::lpfCutoff, "LPF");
     makeFader (secFilter, ID::resonance, "RES");
     makeFader (secFilter, ID::filterEnvAmt, "ENV");
@@ -1850,10 +1901,15 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeDisplay (secFilter, MiniDisplay::filterKind, { ID::lpfCutoff, ID::resonance }, 74);
     addAndMakeVisible (secFilter);
 
+    // The CS-80 filter EG is not an ADSR: IL is where it starts from and AL
+    // is where the attack peaks. Raising IL shortens the sweep and dulls the
+    // tone; lowering it enriches it.
+    makeFader (secFEnv, ID::fEnvIL, "IL");
     makeFader (secFEnv, ID::fEnvA, "A");
     makeFader (secFEnv, ID::fEnvD, "D");
     makeFader (secFEnv, ID::fEnvS, "S");
     makeFader (secFEnv, ID::fEnvR, "R");
+    makeFader (secFEnv, ID::fEnvAL, "AL");
     makeKnob  (secFEnv, ID::velToFilter, "VEL");
     makeDisplay (secFEnv, MiniDisplay::adsrKind, { ID::fEnvA, ID::fEnvD, ID::fEnvS, ID::fEnvR }, 88);
     addAndMakeVisible (secFEnv);
@@ -1874,6 +1930,9 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     addAndMakeVisible (secVco1);
 
     makeLed   (secVco2, ID::jpSync, "SYNC");
+    // LOW drops VCO-2 out of keyboard tracking and runs it at LF, which is
+    // how most Jupiter-8 sync and cross-mod patches are actually built
+    makeLed   (secVco2, ID::jpVco2Low, "LOW");
     makeChips (secVco2, ID::jpVco2Wave, { "TRI", "SAW", "PLS", "NSE" }, "WAVE");
     makeChips (secVco2, ID::jpVco2Range, { "16'", "8'", "4'", "2'" }, "RANGE");
     makeKnob  (secVco2, ID::jpVco2Semi, "SEMI");
@@ -1888,12 +1947,16 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeKnob  (secJpMix, ID::pwmRate, "PWM RT");
     addAndMakeVisible (secJpMix);
 
+    // ENV-1 polarity lives here rather than on F.ENV: that section carries a
+    // mini display in the same top-right slot the LED toggles use.
+    makeLed   (secJpFilter, ID::jpEnvInv, "ENV INV");
     makeLed   (secJpFilter, ID::jpSlope24, "24dB");
     makeFader (secJpFilter, ID::jpHpf, "HPF");
     makeFader (secJpFilter, ID::jpLpf, "LPF");
     makeFader (secJpFilter, ID::jpRes, "RES");
     makeFader (secJpFilter, ID::jpEnvAmt, "ENV");
     makeKnob  (secJpFilter, ID::jpKeyTrk, "KEY TRK");
+    makeKnob  (secJpFilter, ID::jpDrive, "DRIVE");
     addAndMakeVisible (secJpFilter);
 
     makeFader (secJpFEnv, ID::jpFEnvA, "A");
@@ -1963,10 +2026,41 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeKnob  (secArp, ID::arpGate, "GATE", 33);
     addAndMakeVisible (secArp);
 
+    // ---- performance row
+    // The CS-80's second channel is a complete synth of its own. Rather than
+    // duplicate the whole panel, it runs the same settings offset: its own
+    // filter, its own pair of envelope generators, and these four controls
+    // against channel I. All-zero is the old single-filter behaviour.
+    makeKnob (secCh2, ID::csCh2Cut,  "CUTOFF", 33);
+    makeKnob (secCh2, ID::csCh2Res,  "RES", 33);
+    makeKnob (secCh2, ID::csCh2Env,  "ENV", 33);
+    makeKnob (secCh2, ID::csCh2Time, "TIME", 33);
+    addAndMakeVisible (secCh2);
+
+    makeLed  (secRing, ID::ringOn, "ON");
+    makeKnob (secRing, ID::ringDepth,  "DEPTH", 33);
+    makeKnob (secRing, ID::ringRate,   "RATE", 33);
+    makeKnob (secRing, ID::ringEnvAmt, "ENV", 33);
+    makeKnob (secRing, ID::ringAtk,    "ATK", 33);
+    makeKnob (secRing, ID::ringDec,    "DEC", 33);
+    addAndMakeVisible (secRing);
+
+    // BRILLIANCE and RESONANCE are the CS-80's two most-used performance
+    // sliders: one offset over every filter cutoff in the instrument, one
+    // over every resonance, on top of whatever the patch says.
+    makeKnob (secPerform, ID::brilliance, "BRILL", 33);
+    makeKnob (secPerform, ID::resOffset,  "RES", 33);
+    makeKnob (secPerform, ID::velBend,    "V.BEND", 33);
+    addAndMakeVisible (secPerform);
+
+    makeChips (secQuality, ID::oversample, { "OFF", "2x", "4x", "8x" }, "OVERSAMPLE", 66);
+    addAndMakeVisible (secQuality);
+
     makeLed  (secFx, ID::chorusOn, "CHORUS");
     makeLed  (secFx, ID::delayOn, "DELAY");
     makeLed  (secFx, ID::tremOn, "TREM");
     makeLed  (secFx, ID::delaySync, "D.SYNC");
+    makeChips (secFx, ID::chorusMode, { "I", "II", "ENS" }, "CHORUS", 44);
     makeKnob (secFx, ID::chorusRate, "C.RATE", 33);
     makeKnob (secFx, ID::chorusDepth, "C.DEP", 33);
     makeKnob (secFx, ID::chorusMix, "C.MIX", 33);
@@ -2380,6 +2474,7 @@ void EightyEditor::setEngineView (bool jupiter)
     secJpFilter.setVisible (jupiter);
     secJpFEnv.setVisible (jupiter);
     secJpAEnv.setVisible (jupiter);
+    secCh2.setVisible (! jupiter);      // CS-80 only
     panelChips.setJp (jupiter);
 
     if (selectedCtl >= 0 && selectedCtl < (int) controls.size()
@@ -2632,6 +2727,7 @@ void EightyEditor::layoutRows()
     };
 
     const juce::Rectangle<int> engineArea (14, ui::engineY + 3, getWidth() - 28, ui::engineH - 3);
+    const juce::Rectangle<int> perfArea   (14, ui::perfY + 1, getWidth() - 28, ui::perfH - 1);
     const juce::Rectangle<int> sharedArea (14, ui::sharedY + 1, getWidth() - 28, ui::sharedH - 1);
 
     if (jpView)
@@ -2641,12 +2737,22 @@ void EightyEditor::layoutRows()
         placeRow ({ &secOsc1, &secOsc2, &secMix, &secFilter, &secFEnv, &secAEnv },
                   engineArea);
 
+    // Channel II belongs to the CS-80 panel; the ring modulator is offered to
+    // both cards even though it comes from the CS-80, because there is no
+    // musical reason to deny it to the Jupiter layer.
+    std::vector<Section*> perf;
+    if (! jpView) perf.push_back (&secCh2);
+    perf.push_back (&secRing);
+    perf.push_back (&secPerform);
+    perf.push_back (&secQuality);
+    perf.push_back (&secFx);
+    placeRow (perf, perfArea);
+
     std::vector<Section*> shared { &secLfo, &secTouch };
     if (secVoiceCS.isVisible()) shared.push_back (&secVoiceCS);
     if (secVoiceJP.isVisible()) shared.push_back (&secVoiceJP);
     shared.push_back (&secGlide);
     shared.push_back (&secArp);
-    shared.push_back (&secFx);
     placeRow (shared, sharedArea);
 }
 

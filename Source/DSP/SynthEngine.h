@@ -7,6 +7,7 @@
 #include <cstdint>
 #include "Voice.h"
 #include "LFO.h"
+#include "Oversampling.h"
 
 namespace eighty
 {
@@ -220,20 +221,71 @@ public:
     std::function<void (int note, float vel, bool on, int sampleOffset)> noteEcho;
     int echoBase = 0;        // set by the processor before midi-event calls
 
+    // ---------------- Oversampling ----------------------------------------
+    // The whole voice pool renders at osFactor * sampleRate and a cascade of
+    // halfband stages brings it back down. That is what stops the filter
+    // drive stages, hard sync and cross-mod from folding their own harmonics
+    // back into the audible band. Everything inside render() therefore counts
+    // in *oversampled* samples, including the arpeggiator and sequencer
+    // clocks; only the note-echo offsets handed to a hosted synth layer are
+    // converted back to base-rate samples (see echoPos).
+    static constexpr int kMaxOversample = 8;
+
     void prepare (double sampleRate, int maxBlockSize)
     {
-        sr = sampleRate;
-        lfoBuf.resize ((size_t) maxBlockSize);
-        pwmBuf.resize ((size_t) maxBlockSize);
-        lfo.prepare (sampleRate);
-        pwmLfo.prepare (sampleRate);
+        baseSr = sampleRate;
+        maxBlock = std::max (maxBlockSize, 32);
+        sr = baseSr * osFactor;
+
+        lfoBuf.resize ((size_t) maxBlock * kMaxOversample);
+        pwmBuf.resize ((size_t) maxBlock * kMaxOversample);
+        osL.resize ((size_t) maxBlock * kMaxOversample);
+        osR.resize ((size_t) maxBlock * kMaxOversample);
+        dsL.resize ((size_t) maxBlock);
+        dsR.resize ((size_t) maxBlock);
+
+        decim.prepare (maxBlock);
+        decim.setFactor (osFactor);
+
+        lfo.prepare (sr);
+        pwmLfo.prepare (sr);
         for (int i = 0; i < kMaxVoices; ++i)
-            voices[(size_t) i].prepare (sampleRate, i, &vp);
+            voices[(size_t) i].prepare (sr, i, &vp);
         reset();
     }
 
+    // 1, 2, 4 or 8. Allocation-free: the buffers are already sized for the
+    // maximum, and every prepare-like call below only assigns a rate. Safe to
+    // call from the audio thread when the user moves the quality selector.
+    void setOversample (int factor)
+    {
+        const int f = factor >= 8 ? 8 : factor >= 4 ? 4 : factor >= 2 ? 2 : 1;
+        if (f == osFactor) return;
+
+        const int old = osFactor;
+        osFactor = f;
+        sr = baseSr * osFactor;
+
+        decim.setFactor (osFactor);
+        lfo.setSampleRate (sr);
+        pwmLfo.setSampleRate (sr);
+        for (auto& v : voices) v.setSampleRate (sr);
+
+        // The step clocks count in oversampled samples, so rescale whatever
+        // is mid-flight rather than letting the current step jump.
+        auto rescale = [old, f] (int& v) { if (v > 0) v = (int) ((int64_t) v * f / old); };
+        rescale (arpSampleCounter);
+        rescale (arpGateCounter);
+        rescale (seq.sampleCounter);
+        for (auto& t : seq.tracks) rescale (t.gateCounter);
+    }
+
+    int oversampleFactor() const { return osFactor; }
+    int latencySamples() const   { return decim.latencySamples(); }
+
     void reset()
     {
+        decim.reset();
         for (auto& v : voices) v.kill();
         physicalHeld.clear();
         latched.clear();
@@ -361,34 +413,35 @@ public:
     void render (float* left, float* right, int numSamples, int blockOffset = 0)
     {
         if (numSamples <= 0) return;
-        renderBase = blockOffset;
 
-        // Smooth pitch bend toward target (fast but click-free)
-        const float bCoef = 1.f - std::exp (-(float) numSamples / ((float) sr * 0.005f));
-        bendCurrent += (bendTarget - bendCurrent) * bCoef;
-        vp.bendSemis = bendCurrent * (float) es.bendRange;
-
-        // Global LFOs, one value per sample
-        lfo.setRate (es.lfoRate);
-        lfo.setWave (es.lfoWave);
-        pwmLfo.setRate (es.pwmRate);
-        pwmLfo.setWave (LFO::triangle);
-        const float dt = 1.f / (float) sr;
-        for (int i = 0; i < numSamples; ++i)
+        if (osFactor == 1)
         {
-            lfoEnvSeconds += dt;
-            float fade = es.lfoDelay <= 0.01f ? 1.f
-                       : std::fmin (1.f, lfoEnvSeconds / es.lfoDelay);
-            lfoBuf[(size_t) i] = lfo.tick() * fade;
-            pwmBuf[(size_t) i] = pwmLfo.tick();
+            renderSegment (left, right, numSamples, blockOffset);
+            return;
         }
 
-        if (es.arpOn)
-            renderWithArp (left, right, numSamples);
-        else if (seqPlay)
-            renderWithSeq (left, right, numSamples);
-        else
-            renderVoices (left, right, 0, numSamples);
+        // Generate at the oversampled rate into scratch, then decimate. The
+        // scratch is sized for maxBlock base samples, so long segments are
+        // taken in chunks; the decimator's state carries across them.
+        int done = 0;
+        while (done < numSamples)
+        {
+            const int chunk = std::min (numSamples - done, maxBlock);
+            const int n = chunk * osFactor;
+            std::fill (osL.begin(), osL.begin() + n, 0.f);
+            std::fill (osR.begin(), osR.begin() + n, 0.f);
+
+            renderSegment (osL.data(), osR.data(), n, blockOffset + done);
+
+            decim.process (osL.data(), dsL.data(), chunk, 0);
+            decim.process (osR.data(), dsR.data(), chunk, 1);
+            for (int i = 0; i < chunk; ++i)
+            {
+                left[done + i]  += dsL[(size_t) i];
+                right[done + i] += dsR[(size_t) i];
+            }
+            done += chunk;
+        }
     }
 
     // Called when arp is switched off mid-flight
@@ -741,6 +794,44 @@ private:
         return pick;
     }
 
+    // numSamples is in oversampled samples; blockOffset stays in base-rate
+    // samples because it only feeds the note-echo timestamps.
+    void renderSegment (float* left, float* right, int numSamples, int blockOffset)
+    {
+        renderBase = blockOffset;
+
+        // Smooth pitch bend toward target (fast but click-free)
+        const float bCoef = 1.f - std::exp (-(float) numSamples / ((float) sr * 0.005f));
+        bendCurrent += (bendTarget - bendCurrent) * bCoef;
+        vp.bendSemis = bendCurrent * (float) es.bendRange;
+
+        // Global LFOs, one value per sample
+        lfo.setRate (es.lfoRate);
+        lfo.setWave (es.lfoWave);
+        pwmLfo.setRate (es.pwmRate);
+        pwmLfo.setWave (LFO::triangle);
+        const float dt = 1.f / (float) sr;
+        for (int i = 0; i < numSamples; ++i)
+        {
+            lfoEnvSeconds += dt;
+            float fade = es.lfoDelay <= 0.01f ? 1.f
+                       : std::fmin (1.f, lfoEnvSeconds / es.lfoDelay);
+            lfoBuf[(size_t) i] = lfo.tick() * fade;
+            pwmBuf[(size_t) i] = pwmLfo.tick();
+        }
+
+        if (es.arpOn)
+            renderWithArp (left, right, numSamples);
+        else if (seqPlay)
+            renderWithSeq (left, right, numSamples);
+        else
+            renderVoices (left, right, 0, numSamples);
+    }
+
+    // Note-echo timestamps are consumed by the host's MIDI stream, so they
+    // have to come back out of the oversampled clock.
+    int echoPos (int osOffset) const { return renderBase + osOffset / osFactor; }
+
     void renderVoices (float* left, float* right, int offset, int num)
     {
         for (auto& v : voices)
@@ -794,13 +885,13 @@ private:
             {
                 arpFireNow = false;
                 arpSampleCounter = 0;
-                advanceArpStep (stepLen, renderBase + pos);
+                advanceArpStep (stepLen, echoPos (pos));
             }
-            if (arpGateCounter == 0) { stopArpNote (renderBase + pos); arpGateCounter = -1; }
+            if (arpGateCounter == 0) { stopArpNote (echoPos (pos)); arpGateCounter = -1; }
             if (! arpNotes.empty() && arpSampleCounter >= stepLen)
             {
                 arpSampleCounter = 0;
-                advanceArpStep (stepLen, renderBase + pos);
+                advanceArpStep (stepLen, echoPos (pos));
             }
 
             // Render up to the next event boundary
@@ -943,14 +1034,14 @@ private:
             {
                 seq.fireNow = false;
                 seq.sampleCounter = 0;
-                advanceSeqStep (stepLen, renderBase + pos);
+                advanceSeqStep (stepLen, echoPos (pos));
             }
             for (auto& t : seq.tracks)
-                if (t.gateCounter == 0) { stopTrack (t, renderBase + pos); t.gateCounter = -1; }
+                if (t.gateCounter == 0) { stopTrack (t, echoPos (pos)); t.gateCounter = -1; }
             if (seq.sampleCounter >= stepLen)
             {
                 seq.sampleCounter = 0;
-                advanceSeqStep (stepLen, renderBase + pos);
+                advanceSeqStep (stepLen, echoPos (pos));
             }
 
             int chunk = std::min (numSamples - pos, std::max (1, stepLen - seq.sampleCounter));
@@ -1041,7 +1132,14 @@ private:
         monoStack[0].clear(); monoStack[1].clear();
     }
 
-    double sr = 44100.0;
+    // sr is the *rendering* rate: baseSr * osFactor. Everything inside
+    // render() - LFO increments, arp and sequencer step clocks, voice
+    // control-rate smoothing - counts against it.
+    double sr = 44100.0, baseSr = 44100.0;
+    int maxBlock = 512, osFactor = 1;
+    Decimator decim;
+    std::vector<float> osL, osR, dsL, dsR;
+
     std::array<Voice, kMaxVoices> voices;
     LFO lfo, pwmLfo;
     std::vector<float> lfoBuf, pwmBuf;

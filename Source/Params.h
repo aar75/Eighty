@@ -37,19 +37,49 @@ namespace ID
     inline constexpr const char* jpSubOct   = "jpSubOct";
     inline constexpr const char* jpSubWave  = "jpSubWave";
 
-    // Filter (CS-80 topology: 12 dB/oct HPF into 12 dB/oct resonant LPF)
+    // CS-80 sine: routed around the filters into the VCA mixer, as on the
+    // original, so a patch keeps its fundamental under a closed filter.
+    inline constexpr const char* csSineLevel = "csSineLevel";
+
+    // Filter (CS-80 topology: 12 dB/oct HPF into 12 dB/oct LPF, both resonant)
     inline constexpr const char* hpfCutoff     = "hpfCutoff";
     inline constexpr const char* lpfCutoff     = "lpfCutoff";
     inline constexpr const char* resonance     = "resonance";
+    inline constexpr const char* hpfRes        = "hpfRes";
     inline constexpr const char* filterEnvAmt  = "filterEnvAmt";
     inline constexpr const char* keyTrack      = "keyTrack";
     inline constexpr const char* filterDrive   = "filterDrive";
+
+    // CS-80 channel II offsets. The real machine is two complete synths;
+    // channel II here runs the same panel with its own filter, its own
+    // envelope generators and these four offsets against channel I.
+    inline constexpr const char* csCh2Cut  = "csCh2Cut";    // octaves
+    inline constexpr const char* csCh2Res  = "csCh2Res";
+    inline constexpr const char* csCh2Env  = "csCh2Env";
+    inline constexpr const char* csCh2Time = "csCh2Time";   // envelope speed ratio
+
+    // Ring modulator (CS-80): sine carrier, own AD envelope, envelope also
+    // drives the carrier speed.
+    inline constexpr const char* ringOn     = "ringOn";
+    inline constexpr const char* ringDepth  = "ringDepth";
+    inline constexpr const char* ringRate   = "ringRate";
+    inline constexpr const char* ringEnvAmt = "ringEnvAmt";
+    inline constexpr const char* ringAtk    = "ringAtk";
+    inline constexpr const char* ringDec    = "ringDec";
+
+    // Global performance macros + render quality
+    inline constexpr const char* brilliance = "brilliance";
+    inline constexpr const char* resOffset  = "resOffset";
+    inline constexpr const char* velBend    = "velBend";     // Touch Response initial bend
+    inline constexpr const char* oversample = "oversample";  // Off / 2x / 4x / 8x
 
     // Envelopes
     inline constexpr const char* fEnvA = "fEnvA";
     inline constexpr const char* fEnvD = "fEnvD";
     inline constexpr const char* fEnvS = "fEnvS";
     inline constexpr const char* fEnvR = "fEnvR";
+    inline constexpr const char* fEnvIL = "fEnvIL";   // CS-80 initial level
+    inline constexpr const char* fEnvAL = "fEnvAL";   // CS-80 attack level
     inline constexpr const char* aEnvA = "aEnvA";
     inline constexpr const char* aEnvD = "aEnvD";
     inline constexpr const char* aEnvS = "aEnvS";
@@ -114,6 +144,7 @@ namespace ID
 
     // FX
     inline constexpr const char* chorusOn    = "chorusOn";
+    inline constexpr const char* chorusMode  = "chorusMode";   // I / II / Ensemble
     inline constexpr const char* chorusRate  = "chorusRate";
     inline constexpr const char* chorusDepth = "chorusDepth";
     inline constexpr const char* chorusMix   = "chorusMix";
@@ -150,13 +181,16 @@ namespace ID
     inline constexpr const char* jpVco2Range = "jpVco2Range";
     inline constexpr const char* jpVco2Semi  = "jpVco2Semi";
     inline constexpr const char* jpVco2Fine  = "jpVco2Fine";
+    inline constexpr const char* jpVco2Low   = "jpVco2Low";   // VCO-2 as an LF modulator
     inline constexpr const char* jpSync      = "jpSync";
     inline constexpr const char* jpXmod      = "jpXmod";
     inline constexpr const char* jpHpf       = "jpHpf";
     inline constexpr const char* jpLpf       = "jpLpf";
     inline constexpr const char* jpRes       = "jpRes";
+    inline constexpr const char* jpDrive     = "jpDrive";
     inline constexpr const char* jpSlope24   = "jpSlope24";
     inline constexpr const char* jpEnvAmt    = "jpEnvAmt";
+    inline constexpr const char* jpEnvInv    = "jpEnvInv";    // ENV-1 polarity
     inline constexpr const char* jpKeyTrk    = "jpKeyTrk";
     inline constexpr const char* jpFEnvA = "jpFEnvA";
     inline constexpr const char* jpFEnvD = "jpFEnvD";
@@ -221,19 +255,55 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<Pc>(ID::jpSubOct, "JP Sub Octave", subOcts, 0));
     p.push_back(std::make_unique<Pc>(ID::jpSubWave, "JP Sub Wave", subWaves, 0));
 
+    p.push_back(std::make_unique<P>(ID::csSineLevel, "CS Sine", pct, 0.f));
+
     // Filter
     p.push_back(std::make_unique<P>(ID::hpfCutoff, "HPF Cutoff", freqRange, 20.f));
     p.push_back(std::make_unique<P>(ID::lpfCutoff, "LPF Cutoff", freqRange, 9000.f));
     p.push_back(std::make_unique<P>(ID::resonance, "Resonance", pct, 0.15f));
+    p.push_back(std::make_unique<P>(ID::hpfRes, "HPF Res", pct, 0.f));
     p.push_back(std::make_unique<P>(ID::filterEnvAmt, "Filter Env", NormalisableRange<float>(-1.f, 1.f, 0.f), 0.f));
     p.push_back(std::make_unique<P>(ID::keyTrack, "Key Track", pct, 0.5f));
     p.push_back(std::make_unique<P>(ID::filterDrive, "Drive", pct, 0.2f));
+
+    // CS-80 channel II offsets (default all-neutral, so a patch that does not
+    // touch them sounds exactly as it did with one shared filter)
+    p.push_back(std::make_unique<P>(ID::csCh2Cut, "Ch II Cutoff",
+        NormalisableRange<float>(-3.f, 3.f, 0.f), 0.f));
+    p.push_back(std::make_unique<P>(ID::csCh2Res, "Ch II Res",
+        NormalisableRange<float>(-1.f, 1.f, 0.f), 0.f));
+    p.push_back(std::make_unique<P>(ID::csCh2Env, "Ch II Env",
+        NormalisableRange<float>(-1.f, 1.f, 0.f), 0.f));
+    p.push_back(std::make_unique<P>(ID::csCh2Time, "Ch II Time",
+        NormalisableRange<float>(0.25f, 4.f, 0.f, 0.5f), 1.f));
+
+    // Ring modulator
+    p.push_back(std::make_unique<Pb>(ID::ringOn, "Ring On", false));
+    p.push_back(std::make_unique<P>(ID::ringDepth, "Ring Depth", pct, 0.5f));
+    p.push_back(std::make_unique<P>(ID::ringRate, "Ring Rate",
+        NormalisableRange<float>(0.5f, 3000.f, 0.f, 0.25f), 220.f));
+    p.push_back(std::make_unique<P>(ID::ringEnvAmt, "Ring Env",
+        NormalisableRange<float>(-1.f, 1.f, 0.f), 0.f));
+    p.push_back(std::make_unique<P>(ID::ringAtk, "Ring Attack", timeRange(0.001f, 5.f), 0.01f));
+    p.push_back(std::make_unique<P>(ID::ringDec, "Ring Decay",  timeRange(0.005f, 10.f), 0.5f));
+
+    // Global performance macros + render quality
+    p.push_back(std::make_unique<P>(ID::brilliance, "Brilliance",
+        NormalisableRange<float>(-1.f, 1.f, 0.f), 0.f));
+    p.push_back(std::make_unique<P>(ID::resOffset, "Res Offset",
+        NormalisableRange<float>(-1.f, 1.f, 0.f), 0.f));
+    p.push_back(std::make_unique<P>(ID::velBend, "Vel Bend",
+        NormalisableRange<float>(0.f, 2.f, 0.f), 0.3f));
+    p.push_back(std::make_unique<Pc>(ID::oversample, "Oversampling",
+        StringArray { "Off", "2x", "4x", "8x" }, 1));
 
     // Envelopes
     p.push_back(std::make_unique<P>(ID::fEnvA, "F.Env Attack",  timeRange(0.001f, 10.f), 0.005f));
     p.push_back(std::make_unique<P>(ID::fEnvD, "F.Env Decay",   timeRange(0.005f, 10.f), 0.35f));
     p.push_back(std::make_unique<P>(ID::fEnvS, "F.Env Sustain", pct, 0.4f));
     p.push_back(std::make_unique<P>(ID::fEnvR, "F.Env Release", timeRange(0.005f, 10.f), 0.3f));
+    p.push_back(std::make_unique<P>(ID::fEnvIL, "F.Env Initial", pct, 0.f));
+    p.push_back(std::make_unique<P>(ID::fEnvAL, "F.Env Peak",    pct, 1.f));
     p.push_back(std::make_unique<P>(ID::aEnvA, "A.Env Attack",  timeRange(0.001f, 10.f), 0.004f));
     p.push_back(std::make_unique<P>(ID::aEnvD, "A.Env Decay",   timeRange(0.005f, 10.f), 0.4f));
     p.push_back(std::make_unique<P>(ID::aEnvS, "A.Env Sustain", pct, 0.8f));
@@ -304,6 +374,8 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
 
     // FX
     p.push_back(std::make_unique<Pb>(ID::chorusOn, "Chorus On", true));
+    p.push_back(std::make_unique<Pc>(ID::chorusMode, "Chorus Mode",
+        StringArray { "I", "II", "Ens" }, 0));
     p.push_back(std::make_unique<P>(ID::chorusRate,  "Chorus Rate",  NormalisableRange<float>(0.05f, 5.f, 0.f, 0.5f), 0.6f));
     p.push_back(std::make_unique<P>(ID::chorusDepth, "Chorus Depth", pct, 0.35f));
     p.push_back(std::make_unique<P>(ID::chorusMix,   "Chorus Mix",   pct, 0.4f));
@@ -349,14 +421,17 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<Pc>(ID::jpVco2Range, "VCO2 Range", jpFeet, 1));
     p.push_back(std::make_unique<Pi>(ID::jpVco2Semi, "VCO2 Semi", -12, 12, 0));
     p.push_back(std::make_unique<P>(ID::jpVco2Fine, "VCO2 Fine", NormalisableRange<float>(-50.f, 50.f, 0.f), 5.f));
+    p.push_back(std::make_unique<Pb>(ID::jpVco2Low, "VCO2 Low", false));
     p.push_back(std::make_unique<Pb>(ID::jpSync, "Sync", false));
     p.push_back(std::make_unique<P>(ID::jpXmod, "Cross Mod", pct, 0.f));
     p.push_back(std::make_unique<P>(ID::jpHpf, "JP HPF",
         NormalisableRange<float>(20.f, 2000.f, 0.f, 0.3f), 20.f));
     p.push_back(std::make_unique<P>(ID::jpLpf, "JP LPF", freqRange, 9000.f));
     p.push_back(std::make_unique<P>(ID::jpRes, "JP Res", pct, 0.15f));
+    p.push_back(std::make_unique<P>(ID::jpDrive, "JP Drive", pct, 0.15f));
     p.push_back(std::make_unique<Pb>(ID::jpSlope24, "24 dB", true));
     p.push_back(std::make_unique<P>(ID::jpEnvAmt, "JP Env Amt", NormalisableRange<float>(-1.f, 1.f, 0.f), 0.f));
+    p.push_back(std::make_unique<Pb>(ID::jpEnvInv, "JP Env Invert", false));
     p.push_back(std::make_unique<P>(ID::jpKeyTrk, "JP Key Trk", pct, 0.5f));
     p.push_back(std::make_unique<P>(ID::jpFEnvA, "JP F.Attack",  timeRange(0.001f, 10.f), 0.005f));
     p.push_back(std::make_unique<P>(ID::jpFEnvD, "JP F.Decay",   timeRange(0.005f, 10.f), 0.35f));

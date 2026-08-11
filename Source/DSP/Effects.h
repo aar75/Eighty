@@ -4,8 +4,18 @@
 
 namespace eighty
 {
-// Stereo bucket-brigade-style chorus: two short modulated delay lines in
-// quadrature (the CS-80's ensemble/chorus section vibe, minus the noise).
+// Stereo bucket-brigade chorus. Both machines lean on their chorus for a
+// large part of their identity, so this has three modes rather than one:
+//
+//   I    two taps in quadrature, slow and shallow - the Jupiter-8's first
+//        chorus button, the one that just makes things wide
+//   II   the same topology run faster and deeper - the second button
+//   ENS  three taps 120 degrees apart plus a slow secondary sweep, which is
+//        the thicker CS-80 ensemble character rather than a chorus
+//
+// The wet path is deliberately darker than the dry: a BBD is a chain of
+// sample-and-holds with a limited clock, and that top-end roll-off is most
+// of why an analog chorus sits behind the sound instead of on top of it.
 class Chorus
 {
 public:
@@ -15,13 +25,21 @@ public:
         size = (int) (sr * 0.06f) + 4;
         bufL.assign ((size_t) size, 0.f);
         bufR.assign ((size_t) size, 0.f);
-        w = 0; phase = 0.f;
+        w = 0; phase = 0.f; phase2 = 0.f;
+        lpL = lpR = 0.f;
+        // one-pole at ~5.5 kHz: the BBD clock's practical ceiling
+        bbd = 1.f - std::exp (-6.2831853f * 5500.f / sr);
     }
 
-    void setParams (float rateHz, float depth01, float mix01)
+    // mode: 0 = I, 1 = II, 2 = ENS
+    void setParams (float rateHz, float depth01, float mix01, int modeIdx)
     {
-        inc = rateHz / sr;
-        depth = depth01;
+        mode = modeIdx < 0 ? 0 : (modeIdx > 2 ? 2 : modeIdx);
+        const float rateMul  = mode == 1 ? 2.2f : mode == 2 ? 0.7f : 1.f;
+        const float depthMul = mode == 1 ? 1.5f : mode == 2 ? 1.25f : 1.f;
+        inc  = rateHz * rateMul / sr;
+        inc2 = rateHz * rateMul * 0.19f / sr;      // slow secondary sweep (ENS)
+        depth = depth01 * depthMul;
         mix = mix01;
     }
 
@@ -29,23 +47,50 @@ public:
     {
         const float base = 0.012f * sr;          // 12 ms centre
         const float span = 0.006f * sr * depth;  // +/- up to 6 ms
+        const float third = 1.f / 3.f;
         for (int i = 0; i < n; ++i)
         {
             phase += inc;
             if (phase >= 1.f) phase -= 1.f;
-            const float m1 = std::sin (phase * 6.2831853f);
-            const float m2 = std::sin ((phase + 0.25f) * 6.2831853f);
+            phase2 += inc2;
+            if (phase2 >= 1.f) phase2 -= 1.f;
 
             bufL[(size_t) w] = l[i];
             bufR[(size_t) w] = r[i];
 
-            const float dl = base + span * m1;
-            const float dr = base + span * m2;
-            const float wetL = readInterp (bufL, dl);
-            const float wetR = readInterp (bufR, dr);
+            float wetL, wetR;
+            if (mode == 2)
+            {
+                // Three taps evenly spaced round the cycle, each one drifting
+                // against the others on the secondary sweep. Taps 1 and 3 are
+                // hard-placed L/R and tap 2 sits in the middle.
+                const float drift = 0.35f * std::sin (phase2 * 6.2831853f);
+                const float m0 = std::sin ((phase) * 6.2831853f);
+                const float m1 = std::sin ((phase + third + drift) * 6.2831853f);
+                const float m2 = std::sin ((phase + 2.f * third - drift) * 6.2831853f);
 
-            l[i] = l[i] * (1.f - mix * 0.5f) + wetL * mix;
-            r[i] = r[i] * (1.f - mix * 0.5f) + wetR * mix;
+                const float t0 = readInterp (bufL, base + span * m0);
+                const float t1 = readInterp (bufL, base + span * m1);
+                const float t2 = readInterp (bufR, base + span * m2);
+                const float t3 = readInterp (bufR, base + span * m1);
+
+                wetL = (t0 * 0.62f + t1 * 0.38f);
+                wetR = (t2 * 0.62f + t3 * 0.38f);
+            }
+            else
+            {
+                const float m1 = std::sin (phase * 6.2831853f);
+                const float m2 = std::sin ((phase + 0.25f) * 6.2831853f);
+                wetL = readInterp (bufL, base + span * m1);
+                wetR = readInterp (bufR, base + span * m2);
+            }
+
+            // BBD top-end roll-off, wet path only
+            lpL += (wetL - lpL) * bbd;
+            lpR += (wetR - lpR) * bbd;
+
+            l[i] = l[i] * (1.f - mix * 0.5f) + lpL * mix;
+            r[i] = r[i] * (1.f - mix * 0.5f) + lpR * mix;
 
             if (++w >= size) w = 0;
         }
@@ -63,8 +108,10 @@ private:
     }
 
     std::vector<float> bufL, bufR;
-    int size = 0, w = 0;
-    float sr = 44100.f, phase = 0.f, inc = 0.f, depth = 0.3f, mix = 0.4f;
+    int size = 0, w = 0, mode = 0;
+    float sr = 44100.f, phase = 0.f, phase2 = 0.f, inc = 0.f, inc2 = 0.f;
+    float depth = 0.3f, mix = 0.4f;
+    float lpL = 0.f, lpR = 0.f, bbd = 0.5f;
 };
 
 // Stereo delay with feedback and gentle damping in the loop.

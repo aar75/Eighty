@@ -39,11 +39,15 @@ namespace ui
     constexpr int headerH = 56;
     constexpr int tabY    = headerH,      tabH    = 32;
     constexpr int engineY = tabY + tabH,  engineH = 180;   // 88
-    constexpr int sharedY = engineY + engineH, sharedH = 180;   // 268
-    constexpr int seqY    = sharedY + sharedH, seqH    = 98;    // 448
-    constexpr int footerY = seqY + seqH,  footerH = 126;   // 546
-    constexpr int hintY   = footerY + footerH + 2;         // 674
-    constexpr int windowW = 1720, windowH = hintY + 20;    // 694
+    // Performance band: the two CS-80 macro sliders, channel II, the ring
+    // modulator, render quality and the effects. Shorter than the other
+    // bands because everything in it is a knob or a chip stack.
+    constexpr int perfY   = engineY + engineH, perfH   = 120;   // 268
+    constexpr int sharedY = perfY + perfH, sharedH = 180;       // 388
+    constexpr int seqY    = sharedY + sharedH, seqH    = 98;    // 568
+    constexpr int footerY = seqY + seqH,  footerH = 126;   // 666
+    constexpr int hintY   = footerY + footerH + 2;         // 794
+    constexpr int windowW = 1720, windowH = hintY + 20;    // 814
 }
 
 // ------------------------------------------------------------ LookAndFeel
@@ -478,7 +482,12 @@ private:
             secVoiceCS { "CS VOICES", ui::stVoice },
             secVoiceJP { "JP VOICES", ui::stVoice },
             secGlide   { "GLOBAL",    ui::stVoice },
-            secArp     { "ARP",       ui::stLfo },
+            secArp     { "ARP",       ui::stLfo };
+    // performance row
+    Section secCh2     { "CH II",     ui::stOsc },
+            secRing    { "RING MOD",  ui::stMix },
+            secPerform { "PERFORM",   ui::stTouch },
+            secQuality { "QUALITY",   ui::stVoice },
             secFx      { "EFFECTS",   ui::stFilt };
     // CS-80 sections (engine row)
     Section secOsc1  { "OSC I",      ui::stOsc },

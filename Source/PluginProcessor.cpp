@@ -138,7 +138,9 @@ juce::AudioPluginInstance* EightyProcessor::getInsert (int index) const
 
 void EightyProcessor::updateChainLatency()
 {
-    int latency = 0;
+    // The oversampler's decimation filters are linear phase, so they cost a
+    // real group delay the host should compensate for (~27 samples at 8x).
+    int latency = engine.latencySamples();
     {
         const juce::ScopedLock sl (chainLock);
         for (auto* p : insertChain)
@@ -261,6 +263,10 @@ void EightyProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     curSampleRate = sampleRate;
     curBlockSize = samplesPerBlock;
+    {
+        static const int factors[] = { 1, 2, 4, 8 };
+        engine.setOversample (factors[juce::jlimit (0, 3, (int) rawVal (ID::oversample))]);
+    }
     engine.prepare (sampleRate, juce::jmax (samplesPerBlock, 32));
     chorus.prepare (sampleRate, samplesPerBlock);
     delay.prepare (sampleRate);
@@ -373,19 +379,52 @@ void EightyProcessor::updateParameters()
     vp.sub[modelJP8].octaves  = (int) rawVal (ID::jpSubOct) + 1;
     vp.sub[modelJP8].wave     = (int) rawVal (ID::jpSubWave);
 
+    vp.sineLevel    = rawVal (ID::csSineLevel);
+
     vp.hpfCutoff    = rawVal (ID::hpfCutoff);
     vp.lpfCutoff    = rawVal (ID::lpfCutoff);
     vp.resonance    = rawVal (ID::resonance);
+    vp.hpfRes       = rawVal (ID::hpfRes);
     vp.filterEnvAmt = rawVal (ID::filterEnvAmt);
     vp.keyTrack     = rawVal (ID::keyTrack);
     vp.filterDrive  = rawVal (ID::filterDrive);
 
+    vp.ch2.cutoffOct = rawVal (ID::csCh2Cut);
+    vp.ch2.res       = rawVal (ID::csCh2Res);
+    vp.ch2.envAmt    = rawVal (ID::csCh2Env);
+    vp.ch2.timeScale = rawVal (ID::csCh2Time);
+
+    vp.ring.on     = rawVal (ID::ringOn) > 0.5f;
+    vp.ring.depth  = rawVal (ID::ringDepth);
+    vp.ring.rateHz = rawVal (ID::ringRate);
+    vp.ring.envAmt = rawVal (ID::ringEnvAmt);
+    vp.ring.attack = rawVal (ID::ringAtk);
+    vp.ring.decay  = rawVal (ID::ringDec);
+
+    vp.brilliance   = rawVal (ID::brilliance);
+    vp.resOffset    = rawVal (ID::resOffset);
+    vp.velBendSemis = rawVal (ID::velBend);
+
     vp.fA = rawVal (ID::fEnvA); vp.fD = rawVal (ID::fEnvD);
     vp.fS = rawVal (ID::fEnvS); vp.fR = rawVal (ID::fEnvR);
+    vp.fIL = rawVal (ID::fEnvIL); vp.fAL = rawVal (ID::fEnvAL);
     vp.aA = rawVal (ID::aEnvA); vp.aD = rawVal (ID::aEnvD);
     vp.aS = rawVal (ID::aEnvS); vp.aR = rawVal (ID::aEnvR);
     vp.velToAmp    = rawVal (ID::velToAmp);
     vp.velToFilter = rawVal (ID::velToFilter);
+
+    // Render quality. Changing the factor only reassigns rates, so it is
+    // safe here on the audio thread; the latency it costs is republished
+    // to the host when it changes.
+    {
+        static const int factors[] = { 1, 2, 4, 8 };
+        const int want = factors[juce::jlimit (0, 3, (int) rawVal (ID::oversample))];
+        if (want != engine.oversampleFactor())
+        {
+            engine.setOversample (want);
+            updateChainLatency();
+        }
+    }
 
     vp.lfoToPitch  = rawVal (ID::lfoToPitch);
     vp.lfoToFilter = rawVal (ID::lfoToFilter);
@@ -407,13 +446,16 @@ void EightyProcessor::updateParameters()
     jp.vco2FootSemis = (float) (((int) rawVal (ID::jpVco2Range) - 1) * 12);
     jp.semi          = rawVal (ID::jpVco2Semi);
     jp.fine          = rawVal (ID::jpVco2Fine);
+    jp.vco2Low       = rawVal (ID::jpVco2Low) > 0.5f;
     jp.sync          = rawVal (ID::jpSync) > 0.5f;
     jp.xmod          = rawVal (ID::jpXmod);
     jp.hpf           = rawVal (ID::jpHpf);
     jp.lpf           = rawVal (ID::jpLpf);
     jp.res           = rawVal (ID::jpRes);
+    jp.drive         = rawVal (ID::jpDrive);
     jp.slope24       = rawVal (ID::jpSlope24) > 0.5f;
     jp.envAmt        = rawVal (ID::jpEnvAmt);
+    jp.envInv        = rawVal (ID::jpEnvInv) > 0.5f;
     jp.keyTrack      = rawVal (ID::jpKeyTrk);
     jp.fA = rawVal (ID::jpFEnvA); jp.fD = rawVal (ID::jpFEnvD);
     jp.fS = rawVal (ID::jpFEnvS); jp.fR = rawVal (ID::jpFEnvR);
@@ -665,7 +707,8 @@ void EightyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     // FX chain
     if (rawVal (ID::chorusOn) > 0.5f)
     {
-        chorus.setParams (rawVal (ID::chorusRate), rawVal (ID::chorusDepth), rawVal (ID::chorusMix));
+        chorus.setParams (rawVal (ID::chorusRate), rawVal (ID::chorusDepth),
+                          rawVal (ID::chorusMix), (int) rawVal (ID::chorusMode));
         chorus.process (left, right, total);
     }
     if (rawVal (ID::delayOn) > 0.5f)

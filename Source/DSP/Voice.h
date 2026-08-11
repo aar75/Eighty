@@ -35,11 +35,42 @@ struct VoiceParams
     SubCfg sub[2];
 
     float hpfCutoff = 20.f, lpfCutoff = 9000.f, resonance = 0.15f;
+    float hpfRes = 0.f;            // CS-80 high-pass resonance (the real one has it)
     float filterEnvAmt = 0.f, keyTrack = 0.5f, filterDrive = 0.2f;
+    float sineLevel = 0.f;         // CS-80 sine, mixed *after* the filters
 
     float fA = 0.005f, fD = 0.35f, fS = 0.4f, fR = 0.3f;
+    float fIL = 0.f, fAL = 1.f;    // CS-80 filter EG initial / attack level
     float aA = 0.004f, aD = 0.4f,  aS = 0.8f, aR = 0.35f;
     float velToAmp = 0.5f, velToFilter = 0.3f;
+
+    // CS-80 channel II. The real machine is two complete 8-voice synths
+    // sharing a chassis - each channel has its own filter, VCA and envelope
+    // generators, and the two layers moving independently is what makes its
+    // brass and strings work. Rather than duplicate the whole panel, channel
+    // II runs the same settings *offset*: same controls, its own filter and
+    // its own pair of envelope generators running at its own speed.
+    struct Ch2Cfg
+    {
+        float cutoffOct = 0.f;     // octaves, -3 .. +3
+        float res = 0.f;           // -1 .. +1 added to resonance
+        float envAmt = 0.f;        // -1 .. +1 added to filter env amount
+        float timeScale = 1.f;     // 0.25 .. 4, scales both of its envelopes
+    } ch2;
+
+    // Ring modulator (CS-80). A sine carrier with its own attack/decay
+    // envelope, where the envelope also drives the carrier's *speed* - the
+    // detail that makes it sound like the original rather than a multiplier.
+    // Deliberately not keyboard-tracked: that is where the inharmonic,
+    // metallic character comes from.
+    struct RingCfg
+    {
+        bool  on = false;
+        float depth = 0.5f;
+        float rateHz = 220.f;
+        float envAmt = 0.f;        // -1 .. +1, envelope -> carrier speed
+        float attack = 0.01f, decay = 0.5f;
+    } ring;
 
     float lfoToPitch = 0.f, lfoToFilter = 0.f, lfoToAmp = 0.f;
 
@@ -48,6 +79,16 @@ struct VoiceParams
     float drift = 0.35f;
     float stereoSpread = 0.6f;
     float csGain = 1.f, jpGain = 1.f;   // CS/JP mix (Split & Layer modes)
+
+    // Global performance macros, the CS-80's two most-used front-panel
+    // sliders: one offset applied to every filter cutoff in the instrument,
+    // one to every resonance. They sit on top of whatever the patch says.
+    float brilliance = 0.f;        // -1 .. +1, scaled to +/- 3 octaves
+    float resOffset = 0.f;         // -1 .. +1
+
+    // Touch Response initial pitch bend: striking a key hard slides up into
+    // the note from just below it, the way a brass player's embouchure does.
+    float velBendSemis = 0.f;      // 0 .. 2 semitones at full velocity
 
     // Portamento is per-engine: the two voice cards glide independently,
     // so a JP-8 lead can slide while the CS-80 pad underneath does not.
@@ -76,11 +117,13 @@ struct VoiceParams
         int   vco2Wave = 1;
         float vco2FootSemis = 0.f;
         float semi = 0.f, fine = 5.f;
+        bool  vco2Low = false;         // VCO2 drops out of key tracking and runs at LF
         bool  sync = false;            // VCO2 hard-synced to VCO1
         float xmod = 0.f;              // VCO2 -> VCO1 frequency cross-mod
-        float hpf = 20.f, lpf = 9000.f, res = 0.15f;
+        float hpf = 20.f, lpf = 9000.f, res = 0.15f, drive = 0.15f;
         bool  slope24 = true;
         float envAmt = 0.f, keyTrack = 0.5f;
+        bool  envInv = false;          // ENV-1 polarity switch
         float fA = 0.005f, fD = 0.35f, fS = 0.4f, fR = 0.3f;
         float aA = 0.004f, aD = 0.4f,  aS = 0.8f, aR = 0.35f;
     } jp;
@@ -88,11 +131,17 @@ struct VoiceParams
 
 enum VoiceModel { modelCS80 = 0, modelJP8 = 1 };
 
-// One CS-80-style voice card: two VCO channels (saw + PWM pulse from a
-// shared core each), noise, HPF->LPF filter, filter + amp ADSRs.
+// One voice card. In CS-80 mode it is two complete channels - two VCO
+// channels, each into its own HPF->LPF pair and its own filter + amp
+// envelope generators - plus noise, a sub-oscillator and a sine that
+// bypasses the filters, then a shared ring modulator. In JP-8 mode it is a
+// two-VCO card into the ladder filter.
+//
 // Each card gets fixed component-tolerance offsets seeded by its index,
-// scaled at runtime by the Drift parameter - like eight slightly
-// different boards in one chassis.
+// scaled at runtime by the Drift parameter - like eight slightly different
+// boards in one chassis. The two oscillators in a card drift *independently*:
+// making them share one offset kept them perfectly beat-locked, which is the
+// one thing real analog never does.
 class Voice
 {
 public:
@@ -102,23 +151,43 @@ public:
     {
         sr = (float) sampleRate;
         params = sharedParams;
-        filter.prepare (sampleRate);
+        filter[0].prepare (sampleRate);
+        filter[1].prepare (sampleRate);
         jpFilter.prepare (sampleRate);
         fEnv.prepare (sampleRate);
         aEnv.prepare (sampleRate);
+        fEnv2.prepare (sampleRate);
+        aEnv2.prepare (sampleRate);
+        ringEnv.prepare (sampleRate);
         noise.seed (0xBADA55u + (uint32_t) voiceIndex * 7919u);
 
         // Fixed per-card tolerances (stable across runs)
         uint32_t s = 0x1234ABCDu + (uint32_t) voiceIndex * 2654435761u;
         auto rnd = [&s]() { s ^= s << 13; s ^= s >> 17; s ^= s << 5;
                             return (float) (int32_t) s * 4.6566129e-10f; };
-        tolPitchCents = rnd() * 6.f;
+        tolPitchCents[0] = rnd() * 6.f;
+        tolPitchCents[1] = rnd() * 6.f;
         tolCutoffOct  = rnd() * 0.25f;
         tolEnvScale   = rnd() * 0.12f;
         tolPwOffset   = rnd() * 0.03f;
         tolLevel      = rnd() * 0.08f;
         tolPan        = rnd() * 0.2f;
         cardSide      = (voiceIndex % 2 == 0) ? -1.f : 1.f;
+    }
+
+    // Only the sample rate changes when the oversampling factor changes -
+    // no allocation, so this is safe to call from the audio thread.
+    void setSampleRate (double sampleRate)
+    {
+        sr = (float) sampleRate;
+        filter[0].prepare (sampleRate);
+        filter[1].prepare (sampleRate);
+        jpFilter.prepare (sampleRate);
+        fEnv.prepare (sampleRate);
+        aEnv.prepare (sampleRate);
+        fEnv2.prepare (sampleRate);
+        aEnv2.prepare (sampleRate);
+        ringEnv.prepare (sampleRate);
     }
 
     // owner: who triggered this voice - kOwnerLive for the keyboard, or a
@@ -145,8 +214,12 @@ public:
         targetNoteF = (float) midiNote;
         if (glideFromNote >= 0.f)
             currentNoteF = glideFromNote;
-        else if (! aEnv.isActive())
+        else if (! wasActive())
             currentNoteF = targetNoteF;
+
+        // Touch Response initial pitch bend. Kept separate from portamento
+        // so it resolves at its own fast rate whatever Glide is set to.
+        velBend = -params->velBendSemis * velocity;
 
         if (! wasActive())
             smoothInit = true;      // snap the control smoothers, don't sweep in
@@ -157,22 +230,45 @@ public:
             if (model == modelJP8)
             {
                 const auto& J = params->jp;
+                fEnv.setShape (0.f, 1.f);
                 fEnv.setParams (J.fA, J.fD, J.fS, J.fR, ts);
                 aEnv.setParams (J.aA, J.aD, J.aS, J.aR, ts);
+                fEnv2.kill();
+                aEnv2.kill();
             }
             else
             {
-                fEnv.setParams (params->fA, params->fD, params->fS, params->fR, ts);
-                aEnv.setParams (params->aA, params->aD, params->aS, params->aR, ts);
+                const auto& P = *params;
+                fEnv.setShape (P.fIL, P.fAL);
+                fEnv.setParams (P.fA, P.fD, P.fS, P.fR, ts);
+                aEnv.setParams (P.aA, P.aD, P.aS, P.aR, ts);
+                // Channel II: same settings, its own generators, its own speed
+                const float ts2 = ts * P.ch2.timeScale;
+                fEnv2.setShape (P.fIL, P.fAL);
+                fEnv2.setParams (P.fA, P.fD, P.fS, P.fR, ts2);
+                aEnv2.setParams (P.aA, P.aD, P.aS, P.aR, ts2);
+                fEnv2.noteOn();
+                aEnv2.noteOn();
             }
             fEnv.noteOn();
             aEnv.noteOn();
+
+            if (params->ring.on)
+            {
+                ringEnv.setParams (params->ring.attack, params->ring.decay);
+                ringEnv.noteOn();
+            }
+            else
+                ringEnv.kill();
+
             if (! wasActive())
             {
                 vco[0].reset (0.f);
                 vco[1].reset (0.37f); // free-running feel: channels never phase-locked
                 subVco.reset (0.11f);
-                filter.reset();
+                sineOsc.reset (0.f);
+                filter[0].reset();
+                filter[1].reset();
                 jpFilter.reset();
             }
         }
@@ -193,16 +289,20 @@ public:
     // which must fade out even with the sustain pedal down.
     void releaseNow()            { held = false; sustained = false; release(); }
     void setSustained (bool s)   { sustained = s; if (! s && ! held) release(); }
-    void release()               { fEnv.noteOff(); aEnv.noteOff(); }
-    void kill()                  { fEnv.kill(); aEnv.kill(); held = false; sustained = false; }
+    void release()               { fEnv.noteOff(); aEnv.noteOff();
+                                   fEnv2.noteOff(); aEnv2.noteOff(); }
+    void kill()                  { fEnv.kill(); aEnv.kill(); fEnv2.kill(); aEnv2.kill();
+                                   ringEnv.kill(); held = false; sustained = false; }
 
-    bool wasActive() const       { return aEnv.isActive(); }
+    // Channel II can outlast channel I when its time scale is stretched, so
+    // liveness is the union of the two amp envelopes.
+    bool wasActive() const       { return aEnv.isActive() || aEnv2.isActive(); }
     bool isHeld() const          { return held; }
     bool isReleasing() const     { return aEnv.isReleasing(); }
     int  currentNote() const     { return note; }
     int  currentModel() const    { return model; }
     int  currentOwner() const    { return owner; }
-    float envLevel() const       { return aEnv.value(); }
+    float envLevel() const       { return std::fmax (aEnv.value(), aEnv2.value()); }
     uint32_t age() const         { return serial; }
     void setPolyPressure (float p) { polyPressure = p; }
 
@@ -210,7 +310,7 @@ public:
     void render (float* left, float* right, int numSamples,
                  const float* lfoBuf, const float* pwmBuf)
     {
-        if (! aEnv.isActive())
+        if (! wasActive())
             return;
 
         const VoiceParams& P = *params;
@@ -224,6 +324,7 @@ public:
             {
                 const int idx = i + k;
                 float x = 0.f;
+                float amp;
 
                 if (model == modelCS80)
                 {
@@ -234,26 +335,42 @@ public:
                     vco[0].tick (pwA, s0, p0);
                     vco[1].tick (pwB, s1, p1);
 
-                    x += s0 * sawG[0] + p0 * pulseG[0];
-                    x += s1 * sawG[1] + p1 * pulseG[1];
-                    x += noise.tick() * noiseG * 0.7f;
-                    x += tickSub();
+                    // Channel I carries the noise and the sub; channel II is
+                    // just its own oscillator. Each runs its own filter.
+                    float chA = s0 * sawG[0] + p0 * pulseG[0];
+                    chA += noiseG > 0.0001f ? noise.tick() * noiseG * 0.7f : 0.f;
+                    chA += tickSub();
+                    float chB = s1 * sawG[1] + p1 * pulseG[1];
 
-                    x = filter.process (x);
+                    chA = filter[0].process (chA);
+                    chB = filter[1].process (chB);
+
+                    fEnv.tick();
+                    fEnv2.tick();
+                    const float a1 = aEnv.tick();
+                    const float a2 = aEnv2.tick();
+
+                    // The sine bypasses the filters entirely and joins at the
+                    // VCA mixer, as on the original.
+                    const float sine = sineG > 0.0001f ? sineOsc.tick() * sineG : 0.f;
+
+                    x = (chA + sine) * a1 + chB * a2;
+                    amp = ampScale;
                 }
                 else
                 {
                     const auto& J = P.jp;
                     const float pw = clampf (pwEff[0] + pwmDepth[0] * 0.45f * pwmBuf[idx], 0.03f, 0.97f);
 
-                    // cross-mod: VCO2 (previous sample) FMs VCO1
+                    // Cross-mod in the exponential domain: a linear multiplier
+                    // goes negative at depth and runs the oscillator backwards.
                     if (J.xmod > 0.001f)
-                        vco[0].setFrequency (vcoHz[0] * (1.f + J.xmod * 2.f * lastVco2), sr);
+                        vco[0].setFrequency (vcoHz[0] * std::exp2 (J.xmod * 3.f * lastVco2), sr);
 
                     float s0, p0, s1, p1;
                     vco[0].tick (J.vco1Wave == 2 ? pw : 0.5f, s0, p0);
                     if (J.sync && vco[0].justWrapped())
-                        vco[1].reset (0.f);
+                        vco[1].syncTo (vco[0].wrapFraction(), J.vco2Wave == 2 ? pw : 0.5f);
                     vco[1].tick (J.vco2Wave == 2 ? pw : 0.5f, s1, p1);
 
                     const float o1 = J.vco1Wave == 0 ? vco[0].triangle()
@@ -266,14 +383,28 @@ public:
                     x = (o1 * jpMixA + o2 * jpMixB) * 1.2f;
                     x += tickSub();
                     x = jpFilter.process (x);
+
+                    fEnv.tick();
+                    amp = aEnv.tick() * ampScale;
                 }
 
-                fEnv.tick();
-                float amp = aEnv.tick() * ampScale;
-                // global LFO tremolo routing (bipolar -> unipolar dip)
-                amp *= 1.f - P.lfoToAmp * 0.5f * (1.f + lfoBuf[idx]) * 0.5f;
+                // Ring modulator: a sine carrier whose speed is pushed by its
+                // own AD envelope. Sits after the filters, before the output
+                // stage, and applies to whichever card this is.
+                if (ringOn)
+                {
+                    const float re = ringEnv.tick();
+                    ringOsc.setFrequency (ringHz * std::exp2 (ringEnvAmt * 2.f * re), sr);
+                    const float c = ringOsc.tick();
+                    x *= (1.f - ringDepth) + ringDepth * c;
+                }
 
-                const float o = x * amp * 0.8f; // headroom
+                x *= amp;
+
+                // global LFO tremolo routing (bipolar -> unipolar dip)
+                x *= 1.f - P.lfoToAmp * 0.5f * (1.f + lfoBuf[idx]) * 0.5f;
+
+                const float o = x * 0.8f; // headroom
                 left[idx]  += o * panL;
                 right[idx] += o * panR;
             }
@@ -328,9 +459,13 @@ private:
         float extP = std::fmax (P.channelPressure, polyPressure);
         pressure = std::fmax (simP * (held ? 1.f : 0.f), extP);
 
-        // --- Slow per-card pitch wander (analog drift random walk)
-        driftWalk += (noise.tick() - driftWalk * 0.02f) * 0.01f;
-        const float driftCents = (tolPitchCents + driftWalk * 40.f) * P.drift;
+        // --- Slow per-oscillator pitch wander. Two independent random walks,
+        // so the pair beats against itself the way two real VCOs do.
+        for (int c = 0; c < 2; ++c)
+        {
+            driftWalk[c] += (noise.tick() - driftWalk[c] * 0.02f) * 0.01f;
+            driftCents[c] = (tolPitchCents[c] + driftWalk[c] * 40.f) * P.drift;
+        }
 
         // --- Glide (per-engine setting; this card follows its own model)
         const auto& G = P.glide[model == modelJP8 ? 1 : 0];
@@ -342,6 +477,10 @@ private:
             currentNoteF += (targetNoteF - currentNoteF) * coef;
         }
 
+        // --- Touch Response initial pitch bend, resolving at a fixed fast
+        // rate independent of Glide (~45 ms).
+        velBend -= velBend * (1.f - std::exp (-ctrlDt / 0.045f));
+
         // --- Vibrato: global LFO routing + touch vibrato + mod wheel.
         // Touch/mod-wheel vibrato rides the same LFO, so it must be gated
         // by lfoToPitch too - otherwise LFO>Pitch=0 doesn't mean silent.
@@ -349,15 +488,16 @@ private:
                                          + pressure * P.touchToVib * 60.f
                                          + P.modWheel * 60.f);
 
-        const float baseSemis = currentNoteF + P.bendSemis
-                              + (P.masterTuneCents + driftCents + unisonDetune + vibCents) * 0.01f;
+        const float baseSemis = currentNoteF + P.bendSemis + velBend
+                              + (P.masterTuneCents + unisonDetune + vibCents) * 0.01f;
 
         if (model == modelCS80)
         {
             for (int c = 0; c < 2; ++c)
             {
                 const auto& O = P.osc[c];
-                const float semis = baseSemis + O.footSemis + O.semi + O.fine * 0.01f;
+                const float semis = baseSemis + O.footSemis + O.semi + O.fine * 0.01f
+                                  + driftCents[c] * 0.01f;
                 const float hz = 440.f * std::exp2 ((semis - 69.f) / 12.f);
                 vco[c].setFrequency (hz, sr);
                 vcoHz[c] = hz;
@@ -368,17 +508,28 @@ private:
                 smoothTo (pulseG[c], O.on ? O.pulse * O.level : 0.f, smCoef);
             }
             smoothTo (noiseG, P.noiseLevel, smCoef);
-            updateSub (P, baseSemis + P.osc[0].footSemis + P.osc[0].fine * 0.01f, smCoef);
+            smoothTo (sineG, P.sineLevel, smCoef);
+            const float ch1Semis = baseSemis + P.osc[0].footSemis + P.osc[0].fine * 0.01f
+                                 + driftCents[0] * 0.01f;
+            sineOsc.setFrequency (440.f * std::exp2 ((ch1Semis - 69.f) / 12.f), sr);
+            updateSub (P, ch1Semis, smCoef);
         }
         else
         {
             const auto& J = P.jp;
-            const float s1 = baseSemis + J.vco1FootSemis;
-            const float s2 = baseSemis + J.vco2FootSemis + J.semi + J.fine * 0.01f;
+            const float s1 = baseSemis + J.vco1FootSemis + driftCents[0] * 0.01f;
             vcoHz[0] = 440.f * std::exp2 ((s1 - 69.f) / 12.f);
-            vcoHz[1] = 440.f * std::exp2 ((s2 - 69.f) / 12.f);
             vco[0].setFrequency (vcoHz[0], sr);
+
+            // VCO-2 LOW: drops out of keyboard tracking and runs at LF, which
+            // is how most Jupiter-8 sync and cross-mod patches are built.
+            if (J.vco2Low)
+                vcoHz[1] = 2.f * std::exp2 ((J.vco2FootSemis + J.semi + J.fine * 0.01f) / 12.f);
+            else
+                vcoHz[1] = 440.f * std::exp2 ((baseSemis + J.vco2FootSemis + J.semi
+                                               + J.fine * 0.01f + driftCents[1] * 0.01f - 69.f) / 12.f);
             vco[1].setFrequency (vcoHz[1], sr);
+
             smoothTo (pwEff[0], J.pw + tolPwOffset * P.drift, smCoef);
             smoothTo (pwmDepth[0], J.pwmDepth, smCoef);
             smoothTo (jpMixA, 1.f - J.mix, smCoef);
@@ -386,30 +537,64 @@ private:
             updateSub (P, s1, smCoef);
         }
 
+        // --- Ring modulator control
+        ringOn = P.ring.on;
+        if (ringOn)
+        {
+            smoothTo (ringDepth, P.ring.depth, smCoef);
+            ringHz = P.ring.rateHz;
+            ringEnvAmt = P.ring.envAmt;
+        }
+
         // --- Filter cutoff modulation (octave domain). Only the *parameter*
         // is smoothed - envelope, LFO and touch modulation must stay fast.
         const float lpBase   = model == modelCS80 ? P.lpfCutoff : P.jp.lpf;
         const float hpBase   = model == modelCS80 ? P.hpfCutoff : P.jp.hpf;
         const float keyTrk   = model == modelCS80 ? P.keyTrack : P.jp.keyTrack;
-        const float envAmt   = model == modelCS80 ? P.filterEnvAmt : P.jp.envAmt;
+        const float envAmt   = model == modelCS80 ? P.filterEnvAmt
+                                                  : (P.jp.envInv ? -P.jp.envAmt : P.jp.envAmt);
         const float resTgt   = model == modelCS80 ? P.resonance : P.jp.res;
+        const float driveTgt = model == modelCS80 ? P.filterDrive : P.jp.drive;
         smoothTo (lpOct, std::log2 (std::fmax (30.f, lpBase)), smCoef);
         smoothTo (hpOct, std::log2 (std::fmax (10.f, hpBase)), smCoef);
         smoothTo (resSm, resTgt, smCoef);
-        smoothTo (driveSm, P.filterDrive, smCoef);
+        smoothTo (driveSm, driveTgt, smCoef);
+        smoothTo (hpResSm, P.hpfRes, smCoef);
+        smoothTo (brillSm, P.brilliance, smCoef);
+        smoothTo (resOffSm, P.resOffset, smCoef);
+
+        // Common modulation, shared by both CS-80 channels
         float oct = lpOct;
         oct += keyTrk * (currentNoteF - 60.f) / 12.f;
-        oct += envAmt * fEnv.value() * 5.f;
         oct += lfoVal * P.lfoToFilter * 3.f;
         oct += pressure * P.touchToBright * 2.f;
         oct += (velocity - 0.7f) * P.velToFilter * 2.f;
         oct += tolCutoffOct * P.drift;
-        const float lpHz = std::exp2 (clampf (oct, 4.3f, 14.2f)); // ~20 Hz .. 18.8 kHz
-        const float hpHz = std::exp2 (hpOct);
+        // BRILLIANCE moves every filter in the instrument at once. It opens
+        // the high-pass too, at half depth - on the original it moves both,
+        // but full depth there turns a bright patch thin.
+        oct += brillSm * 3.f;
+        const float hpHz = std::exp2 (clampf (hpOct + brillSm * 1.5f, 3.3f, 14.2f));
+        const float res  = clampf (resSm + resOffSm, 0.f, 1.f);
+
         if (model == modelCS80)
-            filter.setParams (hpHz, lpHz, resSm, driveSm);
+        {
+            const float lpHz1 = std::exp2 (clampf (oct + envAmt * fEnv.value() * 5.f, 4.3f, 14.2f));
+            filter[0].setParams (hpHz, lpHz1, res, driveSm, hpResSm);
+
+            // Channel II: its own cutoff, resonance and envelope depth, and
+            // its own envelope generator running at its own speed.
+            const float env2 = clampf (envAmt + P.ch2.envAmt, -1.f, 1.f);
+            const float lpHz2 = std::exp2 (clampf (oct + P.ch2.cutoffOct
+                                                   + env2 * fEnv2.value() * 5.f, 4.3f, 14.2f));
+            const float res2 = clampf (res + P.ch2.res, 0.f, 1.f);
+            filter[1].setParams (hpHz, lpHz2, res2, driveSm, hpResSm);
+        }
         else
-            jpFilter.setParams (hpHz, lpHz, resSm, P.jp.slope24);
+        {
+            const float lpHz = std::exp2 (clampf (oct + envAmt * fEnv.value() * 5.f, 4.3f, 14.2f));
+            jpFilter.setParams (hpHz, lpHz, res, P.jp.slope24, driveSm);
+        }
 
         // --- Amp scaling: velocity, touch level, card level tolerance
         smoothTo (ampScale, (1.f - P.velToAmp * (1.f - velocity))
@@ -433,10 +618,13 @@ private:
 
     const VoiceParams* params = nullptr;
     VCO vco[2], subVco;
+    SineOsc sineOsc, ringOsc;
     Noise noise;
-    CS80Filter filter;
+    CS80Filter filter[2];      // CS-80 channel I and channel II
     JP8Filter jpFilter;
-    ADSR fEnv, aEnv;
+    ADSR fEnv, aEnv;           // channel I (and the whole JP-8 card)
+    ADSR fEnv2, aEnv2;         // CS-80 channel II
+    ADEnv ringEnv;
 
     float sr = 44100.f;
     int note = -1;
@@ -449,25 +637,29 @@ private:
     bool steal = false;
     uint32_t serial = 0;
 
-    float targetNoteF = 60.f, currentNoteF = 60.f;
+    float targetNoteF = 60.f, currentNoteF = 60.f, velBend = 0.f;
     float unisonDetune = 0.f, unisonPan = 0.f, noteGain = 1.f;
     float heldSeconds = 0.f, pressure = 0.f, polyPressure = 0.f;
-    float driftWalk = 0.f;
+    float driftWalk[2] = { 0.f, 0.f }, driftCents[2] = { 0.f, 0.f };
 
     // control-rate cached values, one-pole smoothed toward the block-rate
     // parameter snapshot (see smoothTo). smoothInit snaps them all on the
     // first control block of a note so a fresh voice never sweeps in.
     bool  smoothInit = true;
     float pwEff[2] = { 0.5f, 0.5f }, pwmDepth[2] = { 0.f, 0.f };
-    float sawG[2] = { 0.f, 0.f }, pulseG[2] = { 0.f, 0.f }, noiseG = 0.f;
+    float sawG[2] = { 0.f, 0.f }, pulseG[2] = { 0.f, 0.f }, noiseG = 0.f, sineG = 0.f;
     float jpMixA = 0.5f, jpMixB = 0.5f;
     float subG = 0.f;
     int   subWave = 0;
-    float lpOct = 13.f, hpOct = 4.32f, resSm = 0.15f, driveSm = 0.2f;
+    float lpOct = 13.f, hpOct = 4.32f, resSm = 0.15f, driveSm = 0.2f, hpResSm = 0.f;
+    float brillSm = 0.f, resOffSm = 0.f;
     float ampScale = 1.f, panPos = 0.f, panL = 0.707f, panR = 0.707f;
+    bool  ringOn = false;
+    float ringDepth = 0.f, ringHz = 220.f, ringEnvAmt = 0.f;
 
     // per-card tolerances
-    float tolPitchCents = 0.f, tolCutoffOct = 0.f, tolEnvScale = 0.f;
+    float tolPitchCents[2] = { 0.f, 0.f };
+    float tolCutoffOct = 0.f, tolEnvScale = 0.f;
     float tolPwOffset = 0.f, tolLevel = 0.f, tolPan = 0.f, cardSide = -1.f;
 };
 } // namespace eighty
