@@ -167,7 +167,7 @@ track recycles its own voice cards before touching yours.
 ## Presets
 
 The bar in the tab strip is the whole preset system: `<` / `>` step through
-the folder, the name button opens the list, **SAVE** snapshots the current
+the list, the name button opens it, **SAVE** snapshots the current
 sound. A preset is every parameter plus the per-key engine map and the
 sequencer pattern — not the MIDI-learn map (that belongs to your hardware)
 and not the hosted VST3 chain (reloading plugins on every switch would
@@ -175,6 +175,28 @@ stall). Files are `.eighty` XML in
 `~/Library/Application Support/Eighty/Presets`, and the name menu has a
 "Reveal folder" item. An asterisk after the name means you have edited it
 since it was loaded.
+
+**Starting points** sit above your own presets in the list — four built-in
+sounds that are a bare waveform and nothing else, for when you want to build
+a sound rather than play one:
+
+| | Engine | |
+|---|---|---|
+| **Plain Saw** | CS-80 | one oscillator, saw only |
+| **Plain Pulse** | CS-80 | 25% duty — a notch on every fourth harmonic |
+| **Plain Square** | JP-8 | VCO 1 only |
+| **Plain Triangle** | JP-8 | VCO 1 only |
+
+Saw and pulse come off the CS-80 card, which mixes its saw and pulse outputs
+continuously; square and triangle come off the JP-8, whose VCO has them as
+discrete waveform positions — which is also why they open on different
+panels. On each one the filter is wide open and out of circuit, the envelope
+is a flat gate, and velocity, aftertouch, drift, stereo spread and the
+chorus are all turned *off* rather than merely left alone. They are defined
+in `Source/FactoryPresets.h` as overrides on the parameter defaults, so
+loading one resets everything else rather than leaving the last sound's
+settings lying around, and being built in they cannot be overwritten or
+deleted.
 
 ## Render quality (oversampling)
 

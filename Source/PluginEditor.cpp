@@ -2328,18 +2328,21 @@ LedToggle* EightyEditor::makeLed (Section& s, const juce::String& paramID, const
 void EightyEditor::buildPresetBar()
 {
     presetPrevBtn.setWantsKeyboardFocus (false);
-    presetPrevBtn.setTooltip ("Previous preset in the folder");
+    presetPrevBtn.setTooltip ("Previous preset: the built-in starting points, "
+                              "then your saved files");
     presetPrevBtn.onClick = [this] { stepPreset (-1); };
     addAndMakeVisible (presetPrevBtn);
 
     presetNextBtn.setWantsKeyboardFocus (false);
-    presetNextBtn.setTooltip ("Next preset in the folder");
+    presetNextBtn.setTooltip ("Next preset: the built-in starting points, "
+                              "then your saved files");
     presetNextBtn.onClick = [this] { stepPreset (1); };
     addAndMakeVisible (presetNextBtn);
 
     presetNameBtn.setWantsKeyboardFocus (false);
-    presetNameBtn.setTooltip ("Click for the preset list. An asterisk means you have edited "
-                              "this preset since it was loaded");
+    presetNameBtn.setTooltip ("Click for the preset list: built-in starting points (a bare "
+                              "waveform with everything else off) above your saved presets. "
+                              "An asterisk means you have edited this one since loading it");
     presetNameBtn.onClick = [this] { showPresetMenu(); };
     addAndMakeVisible (presetNameBtn);
 
@@ -2377,43 +2380,71 @@ void EightyEditor::applyPreset (const juce::File& file)
     repaint();
 }
 
+std::vector<EightyEditor::PresetEntry> EightyEditor::presetEntries() const
+{
+    std::vector<PresetEntry> entries;
+    for (int i = 0; i < EightyProcessor::getNumFactoryPresets(); ++i)
+        entries.push_back ({ i, {}, EightyProcessor::getFactoryPresetName (i) });
+    for (auto& f : proc.presetFiles())
+        entries.push_back ({ -1, f, f.getFileNameWithoutExtension() });
+    return entries;
+}
+
+void EightyEditor::applyPresetEntry (const PresetEntry& e)
+{
+    if (e.factoryIndex < 0) { applyPreset (e.file); return; }
+
+    proc.loadFactoryPreset (e.factoryIndex);
+    refreshPresetName();
+    seqGrid.repaint();
+    readoutText = "PRESET . " + proc.currentPresetName().toUpperCase();
+    readoutUntil = juce::Time::getMillisecondCounter() + 2500;
+    repaint();
+}
+
 void EightyEditor::stepPreset (int dir)
 {
-    auto files = proc.presetFiles();
-    if (files.isEmpty())
-    {
-        readoutText = "NO PRESETS SAVED YET - HIT SAVE";
-        readoutUntil = juce::Time::getMillisecondCounter() + 2500;
-        return;
-    }
+    const auto entries = presetEntries();     // never empty: factory presets
+    if (entries.empty()) return;
 
+    // Matched by name, and the factory entries come first - so a saved preset
+    // that happens to share a factory name steps as the factory one. Harmless,
+    // and it keeps this from needing its own notion of "where we are".
     int index = -1;
-    for (int i = 0; i < files.size(); ++i)
-        if (files[i].getFileNameWithoutExtension() == proc.currentPresetName()) { index = i; break; }
+    for (int i = 0; i < (int) entries.size(); ++i)
+        if (entries[(size_t) i].name == proc.currentPresetName()) { index = i; break; }
 
-    // not in the folder (unsaved edit): step onto the first/last entry
-    index = index < 0 ? (dir > 0 ? 0 : files.size() - 1)
-                      : (index + dir + files.size()) % files.size();
-    applyPreset (files[index]);
+    // not in the list (unsaved edit): step onto the first/last entry
+    const int n = (int) entries.size();
+    index = index < 0 ? (dir > 0 ? 0 : n - 1) : (index + dir + n) % n;
+    applyPresetEntry (entries[(size_t) index]);
 }
 
 void EightyEditor::showPresetMenu()
 {
-    auto files = proc.presetFiles();
+    const auto entries = presetEntries();
+    const int numFactory = EightyProcessor::getNumFactoryPresets();
+
     juce::PopupMenu m;
     m.setLookAndFeel (&lnf);
-    m.addSectionHeader ("Presets");
-    if (files.isEmpty())
+    m.addSectionHeader ("Starting points");
+    for (int i = 0; i < (int) entries.size(); ++i)
+    {
+        if (i == numFactory) m.addSectionHeader ("Presets");
+        m.addItem (i + 1, entries[(size_t) i].name, true,
+                   entries[(size_t) i].name == proc.currentPresetName());
+    }
+    if ((int) entries.size() == numFactory)   // nothing saved yet
+    {
+        m.addSectionHeader ("Presets");
         m.addItem (-1, "(none saved yet)", false);
-    for (int i = 0; i < files.size(); ++i)
-        m.addItem (i + 1, files[i].getFileNameWithoutExtension(), true,
-                   files[i].getFileNameWithoutExtension() == proc.currentPresetName());
+    }
     m.addSeparator();
     m.addItem (9001, "Save as...");
     m.addItem (9002, "Reveal folder in Finder");
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (presetNameBtn),
-        [this, files] (int result)
+        [this, entries] (int result)
         {
             if (result == 9001) { promptSavePreset(); return; }
             if (result == 9002)
@@ -2424,8 +2455,8 @@ void EightyEditor::showPresetMenu()
                 return;
             }
             const int idx = result - 1;
-            if (idx >= 0 && idx < files.size())
-                applyPreset (files[idx]);
+            if (idx >= 0 && idx < (int) entries.size())
+                applyPresetEntry (entries[(size_t) idx]);
         });
 }
 

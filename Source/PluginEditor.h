@@ -460,7 +460,18 @@ private:
                               std::initializer_list<const char*> paramIDs, int width);
     void wireSlider (LearnSlider&, juce::Label& value, const juce::String& paramID);
 
-    // preset bar (tab band)
+    // preset bar (tab band). The list the < > buttons walk and the menu shows
+    // is the built-in starting points followed by the user's saved files, so
+    // there is one ordering and one notion of "the next preset".
+    struct PresetEntry
+    {
+        int factoryIndex = -1;      // >= 0 for a factory starting point
+        juce::File file;            // otherwise a saved .eighty file
+        juce::String name;
+    };
+    std::vector<PresetEntry> presetEntries() const;
+    void applyPresetEntry (const PresetEntry&);
+
     void buildPresetBar();
     void showPresetMenu();
     void promptSavePreset();

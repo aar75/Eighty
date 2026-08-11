@@ -862,6 +862,48 @@ void EightyProcessor::soundFromValueTree (const juce::ValueTree& tree)
     apvts.replaceState (state);
 }
 
+// ------------------------------------------------------ factory presets
+int EightyProcessor::getNumFactoryPresets()
+{
+    return (int) eighty::factoryPresets().size();
+}
+
+juce::String EightyProcessor::getFactoryPresetName (int index)
+{
+    const auto& list = eighty::factoryPresets();
+    return index >= 0 && index < (int) list.size() ? juce::String (list[(size_t) index].name)
+                                                   : juce::String();
+}
+
+void EightyProcessor::loadFactoryPreset (int index)
+{
+    const auto& list = eighty::factoryPresets();
+    if (index < 0 || index >= (int) list.size()) return;
+    const auto& preset = list[(size_t) index];
+
+    engine.allNotesOff();
+
+    // Defaults first, then the preset's overrides: that is what makes these
+    // clean starting points instead of a diff against whatever was loaded
+    // before. Every parameter is touched, so nothing can survive the switch.
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            rp->setValueNotifyingHost (rp->getDefaultValue());
+
+    for (const auto& [id, value] : preset.params)
+        if (auto* rp = apvts.getParameter (id))
+            rp->setValueNotifyingHost (rp->convertTo0to1 (value));
+
+    // The pattern and the key map live outside the APVTS, so they need
+    // clearing by hand or the last sound's sequence plays under the new one.
+    for (int t = 0; t < eighty::SynthEngine::StepSeq::kTracks; ++t)
+        engine.seqClearTrack (t);
+    fillKeyZones ([] (int note) { return (uint8_t) (note < 60 ? 0 : 1); });
+
+    presetName = preset.name;
+    presetDirty = false;
+}
+
 juce::File EightyProcessor::presetFolder()
 {
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)

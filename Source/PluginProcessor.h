@@ -3,6 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
 #include "Params.h"
+#include "FactoryPresets.h"
 #include "DSP/SynthEngine.h"
 #include "DSP/Effects.h"
 
@@ -189,6 +190,13 @@ public:
     // and the sequencer pattern. Deliberately *not* the MIDI-learn map (that
     // belongs to your hardware, not the sound) or the hosted VST3 chain
     // (reloading plugins on every preset switch would stall the UI).
+    // Factory starting points (FactoryPresets.h): built in, so they are always
+    // there and cannot be overwritten or deleted. They live alongside the
+    // user's saved files in the preset bar rather than in a separate browser.
+    static int getNumFactoryPresets();
+    static juce::String getFactoryPresetName (int index);
+    void loadFactoryPreset (int index);
+
     static juce::File presetFolder();
     juce::Array<juce::File> presetFiles() const;
     bool savePreset (const juce::String& name, juce::String& error);
