@@ -1060,8 +1060,9 @@ namespace
 SeqGrid::SeqGrid (EightyProcessor& p) : proc (p)
 {
     setTooltip ("Step grid. Click a step to move the record/edit cursor there (and drop in any keys "
-                "you are holding). Drag up or down to transpose a step, double-click to clear it, "
-                "right-click for the step and track menu");
+                "you are holding). Drag up/down to transpose a step, drag left/right to hold it "
+                "across several steps, double-click to clear it, right-click for the step and "
+                "track menu");
 }
 
 int SeqGrid::trackAt (juce::Point<int> pos) const
@@ -1110,21 +1111,38 @@ void SeqGrid::paint (juce::Graphics& g)
         const auto& track = seq.tracks[(size_t) t];
         const int len = juce::jlimit (1, nSteps, track.length);
 
+        // Walk the loop the way playback does to find which steps are
+        // swallowed by a held note - those are drawn under a sustain bar
+        // and greyed, because their own contents never fire.
+        bool covered[eighty::SynthEngine::SeqTrack::kSteps] = {};
+        for (int s = 0; s < len;)
+        {
+            const auto& st = track.steps[(size_t) s];
+            const int h = st.count > 0
+                        ? juce::jlimit (1, eighty::SynthEngine::SeqStep::kMaxHold, (int) st.hold)
+                        : 1;
+            for (int i = 1; i < h; ++i)
+                covered[(s + i) % len] = true;
+            s += h;
+        }
+
         for (int s = 0; s < nSteps; ++s)
         {
             auto cell = cellBounds (t, s).reduced (1);
             const auto& st = track.steps[(size_t) s];
             const bool beyond = s >= len;
+            const bool swallowed = ! beyond && covered[s];
             const bool onPlayhead = playing && ! beyond && track.playStep == s;
             const bool onCursor = seq.recTrack == t && seq.recStep == s;
 
             // body
+            const bool lit = st.count > 0 && ! swallowed;
             juce::Colour fill = beyond ? ui::scopeBg.brighter (0.02f)
-                              : st.count > 0 ? ui::scopeTrace.withAlpha (track.mute ? 0.16f : 0.34f)
-                                             : ui::scopeLine.withAlpha (0.5f);
+                              : lit ? ui::scopeTrace.withAlpha (track.mute ? 0.16f : 0.34f)
+                                    : ui::scopeLine.withAlpha (swallowed ? 0.28f : 0.5f);
             if (onPlayhead)
-                fill = st.count > 0 ? ui::scopeTrace.withAlpha (track.mute ? 0.3f : 0.85f)
-                                    : ui::scopeLine.withAlpha (0.9f);
+                fill = lit ? ui::scopeTrace.withAlpha (track.mute ? 0.3f : 0.85f)
+                           : ui::scopeLine.withAlpha (0.9f);
             g.setColour (fill);
             g.fillRoundedRectangle (cell.toFloat(), 2.f);
 
@@ -1137,8 +1155,8 @@ void SeqGrid::paint (juce::Graphics& g)
 
             if (st.count > 0)
             {
-                g.setColour (onPlayhead ? ui::scopeBg
-                                        : (beyond ? ui::dim.withAlpha (0.55f) : ui::cream));
+                g.setColour (onPlayhead && lit ? ui::scopeBg
+                           : beyond || swallowed ? ui::dim.withAlpha (0.55f) : ui::cream);
                 g.setFont (ui::mono (st.count > 3 ? 8.f : 9.5f));
                 g.drawText (chordText (st), cell.reduced (3, 0),
                             juce::Justification::centred, false);
@@ -1149,6 +1167,31 @@ void SeqGrid::paint (juce::Graphics& g)
                 g.setColour (recording ? ui::ledOn : ui::scopeTrace);
                 g.drawRoundedRectangle (cell.toFloat().reduced (0.5f), 2.f, 1.6f);
             }
+        }
+
+        // sustain bars: a held step draws a tail through the steps it covers,
+        // wrapping at the loop end if it runs past it
+        for (int s = 0; s < len; ++s)
+        {
+            const auto& st = track.steps[(size_t) s];
+            if (st.count == 0 || st.hold <= 1 || covered[s]) continue;
+            const int h = juce::jlimit (1, eighty::SynthEngine::SeqStep::kMaxHold, (int) st.hold);
+
+            g.setColour (ui::scopeTrace.withAlpha (track.mute ? 0.25f : 0.6f));
+            for (int i = 1; i < h; ++i)
+            {
+                const int at = (s + i) % len;
+                auto c = cellBounds (t, at).reduced (1);
+                const bool wrapped = s + i >= len;
+                // start at the left edge unless this tail piece follows on
+                // directly from the previous cell
+                const int x0 = c.getX() - (at == 0 || wrapped ? 0 : 2);
+                g.fillRect (x0, c.getCentreY() - 1, c.getRight() - x0, 3);
+            }
+            // stub out of the originating cell so the tie reads as connected
+            auto from = cellBounds (t, s).reduced (1);
+            if (s + 1 < len || h > 1)
+                g.fillRect (from.getRight() - 2, from.getCentreY() - 1, 4, 3);
         }
 
         // loop-end marker, so a shortened track reads at a glance
@@ -1184,13 +1227,17 @@ void SeqGrid::mouseDown (const juce::MouseEvent& e)
     if (e.mods.isPopupMenu()) { showStepMenu (t, s); return; }
 
     setCursor (t, s);
-    dragTrack = t; dragStep = s; dragStartY = e.y; dragApplied = 0;
+    dragTrack = t; dragStep = s;
+    dragStartX = e.x; dragStartY = e.y;
+    dragAxis = 0; dragApplied = 0;
+    if (const auto* cur = proc.engine.stepAt (t, s)) dragBaseHold = juce::jmax (1, (int) cur->hold);
 
     // drop whatever is being held into the step - the fastest way to build
     // a pattern without arming REC
     auto* st = proc.engine.stepAt (t, s);
     if (st == nullptr) return;
     eighty::SynthEngine::SeqStep fresh;
+    fresh.hold = st->hold;          // hold belongs to the step, not the notes
     for (int n = 0; n < 128; ++n)
         if (const int v = proc.heldNoteVel[(size_t) n].load (std::memory_order_relaxed))
             fresh.add (n, (float) v / 127.f);
@@ -1206,13 +1253,36 @@ void SeqGrid::mouseDown (const juce::MouseEvent& e)
              + " STEP " + juce::String (s + 1));
 }
 
+// Drag locks to one axis on the first real movement: up/down transposes the
+// step, left/right stretches it across the steps it should hold for.
 void SeqGrid::mouseDrag (const juce::MouseEvent& e)
 {
     if (dragTrack < 0) return;
     auto* st = proc.engine.stepAt (dragTrack, dragStep);
     if (st == nullptr || st->count == 0) return;
 
-    const int wanted = (dragStartY - e.y) / 6;      // 6 px per semitone
+    const int dx = e.x - dragStartX, dy = e.y - dragStartY;
+    if (dragAxis == 0)
+    {
+        if (std::abs (dx) < 8 && std::abs (dy) < 6) return;
+        dragAxis = std::abs (dx) > std::abs (dy) ? 2 : 1;
+    }
+
+    if (dragAxis == 2)
+    {
+        const int nSteps = eighty::SynthEngine::SeqTrack::kSteps;
+        const int cellW = juce::jmax (1, getWidth() / nSteps);
+        const int want = juce::jlimit (1, eighty::SynthEngine::SeqStep::kMaxHold,
+                                       dragBaseHold + juce::roundToInt ((float) dx / (float) cellW));
+        if (want == (int) st->hold) return;
+        proc.engine.seqSetHold (dragTrack, dragStep, want);
+        say ("SEQ STEP " + juce::String (dragStep + 1) + " HOLDS "
+             + juce::String (want) + (want == 1 ? " STEP" : " STEPS"));
+        repaint();
+        return;
+    }
+
+    const int wanted = -dy / 6;                     // 6 px per semitone
     const int delta = wanted - dragApplied;
     if (delta == 0) return;
     st->transpose (delta);
@@ -1234,8 +1304,20 @@ void SeqGrid::mouseDoubleClick (const juce::MouseEvent& e)
 void SeqGrid::showStepMenu (int track, int step)
 {
     const juce::String tn (track == 0 ? "A" : "B");
+    const auto* st = proc.engine.stepAt (track, step);
+    const int hold = st != nullptr ? juce::jmax (1, (int) st->hold) : 1;
+
+    juce::PopupMenu holds;
+    for (int h = 1; h <= 8; ++h)
+        holds.addItem (100 + h, h == 1 ? "1 step (normal)" : juce::String (h) + " steps",
+                       true, h == hold);
+    holds.addSeparator();
+    for (int h : { 12, 16 })
+        holds.addItem (100 + h, juce::String (h) + " steps", true, h == hold);
+
     juce::PopupMenu m;
     m.addSectionHeader ("Track " + tn + ", step " + juce::String (step + 1));
+    m.addSubMenu ("Hold for", holds, st != nullptr && st->count > 0);
     m.addItem (1, "Clear step");
     m.addItem (2, "Set loop length to " + juce::String (step + 1) + " steps");
     m.addSeparator();
@@ -1248,6 +1330,15 @@ void SeqGrid::showStepMenu (int track, int step)
         [this, track, step] (int result)
         {
             auto& engine = proc.engine;
+            if (result > 100)
+            {
+                const int h = result - 100;
+                engine.seqSetHold (track, step, h);
+                say ("SEQ STEP " + juce::String (step + 1) + " HOLDS "
+                     + juce::String (h) + (h == 1 ? " STEP" : " STEPS"));
+                repaint();
+                return;
+            }
             switch (result)
             {
                 case 1: engine.seqClearStep (track, step); break;

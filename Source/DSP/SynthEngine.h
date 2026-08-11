@@ -90,11 +90,16 @@ public:
     struct SeqStep
     {
         static constexpr int kMaxNotes = 6;
+        static constexpr int kMaxHold = 16;
         int8_t  note[kMaxNotes] {};
         uint8_t vel[kMaxNotes] {};
         uint8_t count = 0;                 // 0 = rest
+        // How many steps this one occupies. 1 is a normal step; 4 holds the
+        // notes across four steps and swallows the three it covers, which is
+        // how you sustain a bass note under a busier pattern.
+        uint8_t hold = 1;
 
-        void clear() { count = 0; }
+        void clear() { count = 0; hold = 1; }
         bool has (int n) const
         {
             for (uint8_t i = 0; i < count; ++i) if (note[i] == (int8_t) n) return true;
@@ -125,6 +130,7 @@ public:
         // playback state (audio thread only)
         int     playStep = -1;
         int     gateCounter = -1;
+        int     holdRemaining = 0;         // steps the sounding step still occupies
         SeqStep sounding;                  // what this track is holding now
         int     soundModel = -1;           // forced model it was fired with
         int     owner = 0;                 // voice owner tag (= track index)
@@ -156,7 +162,7 @@ public:
 
     void seqPlayStart()
     {
-        for (auto& t : seq.tracks) { t.playStep = -1; t.gateCounter = -1; }
+        for (auto& t : seq.tracks) { t.playStep = -1; t.gateCounter = -1; t.holdRemaining = 0; }
         seq.sampleCounter = 0;
         seq.fireNow = true;
         seqPlay = true;
@@ -165,7 +171,7 @@ public:
     void seqPlayStop()
     {
         for (auto& t : seq.tracks) stopTrack (t, echoBase);
-        for (auto& t : seq.tracks) { t.playStep = -1; t.gateCounter = -1; }
+        for (auto& t : seq.tracks) { t.playStep = -1; t.gateCounter = -1; t.holdRemaining = 0; }
         seq.fireNow = false;
         seqPlay = false;
     }
@@ -190,6 +196,11 @@ public:
         if (from == to) return;
         for (int i = 0; i < SeqTrack::kSteps; ++i)
             if (auto* s = stepAt (from, i)) seqSetStep (to, i, *s);
+    }
+    void seqSetHold (int track, int step, int steps)
+    {
+        if (auto* s = stepAt (track, step))
+            s->hold = (uint8_t) std::clamp (steps, 1, SeqStep::kMaxHold);
     }
     void seqTransposeTrack (int track, int semis)
     {
@@ -235,7 +246,7 @@ public:
         seq.sampleCounter = 0; seq.fireNow = false;
         for (auto& t : seq.tracks)
         {
-            t.playStep = -1; t.gateCounter = -1;
+            t.playStep = -1; t.gateCounter = -1; t.holdRemaining = 0;
             t.sounding.clear(); t.soundModel = -1;
         }
     }
@@ -323,7 +334,7 @@ public:
         physicalHeld.clear(); latched.clear(); arpNotes.clear();
         monoStack[0].clear(); monoStack[1].clear();
         stopArpNote (echoBase);
-        for (auto& t : seq.tracks) { stopTrack (t, echoBase); t.gateCounter = -1; }
+        for (auto& t : seq.tracks) { stopTrack (t, echoBase); t.gateCounter = -1; t.holdRemaining = 0; }
         seq.fireNow = false;
         for (auto& v : voices) v.release();
     }
@@ -904,8 +915,10 @@ private:
         auto& track = seq.tracks[(size_t) std::clamp (seq.recTrack, 0, StepSeq::kTracks - 1)];
         const int len = std::clamp (track.length, 1, SeqTrack::kSteps);
         const int cursor = std::clamp (seq.recStep, 0, len - 1);
+        const uint8_t keepHold = track.steps[(size_t) cursor].hold;   // step property
         track.steps[(size_t) cursor].clear();
         track.steps[(size_t) cursor] = seq.recChord;
+        track.steps[(size_t) cursor].hold = keepHold;
         seq.recChord.clear();
         seq.recHeldCount = 0;
         if (++seq.recStep >= len)
@@ -957,15 +970,23 @@ private:
         for (int ti = 0; ti < StepSeq::kTracks; ++ti)
         {
             auto& t = seq.tracks[(size_t) ti];
-            stopTrack (t, sampleOffset);
             const int len = std::clamp (t.length, 1, SeqTrack::kSteps);
             t.playStep = (t.playStep + 1) % len;
+
+            // Still inside a held step: the playhead moves on but the notes
+            // keep sounding and this step's own contents are skipped.
+            if (t.holdRemaining > 1) { --t.holdRemaining; continue; }
+
+            stopTrack (t, sampleOffset);
             t.gateCounter = -1;
-            if (t.mute) continue;
 
             const auto& st = t.steps[(size_t) t.playStep];
-            const int forced = t.engine == 1 ? modelCS80 : t.engine == 2 ? modelJP8 : -1;
             const uint8_t n = std::min (st.count, (uint8_t) SeqStep::kMaxNotes);
+            const int hold = n > 0 ? std::clamp ((int) st.hold, 1, SeqStep::kMaxHold) : 1;
+            t.holdRemaining = hold;        // counted even when muted, so the
+            if (t.mute) continue;          // pattern keeps its shape
+
+            const int forced = t.engine == 1 ? modelCS80 : t.engine == 2 ? modelJP8 : -1;
             for (uint8_t i = 0; i < n; ++i)
             {
                 const float vel = (float) st.vel[i] / 127.f;
@@ -975,8 +996,11 @@ private:
             t.sounding = st;
             t.soundModel = forced;
             t.owner = ti;
+            // Whole steps held, plus the gate fraction of the last one, so
+            // Gate still shortens a held note without cutting it to one step.
             if (n > 0)
-                t.gateCounter = std::max (16, (int) (es.arpGate * (float) stepLen));
+                t.gateCounter = std::max (16, (int) (((float) (hold - 1) + es.arpGate)
+                                                     * (float) stepLen));
         }
     }
 

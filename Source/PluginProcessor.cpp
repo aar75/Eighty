@@ -159,7 +159,9 @@ static juce::ValueTree pluginInstanceToTree (juce::AudioPluginInstance& p)
 }
 
 // A track is one string: steps separated by ';', chord notes by ',', each
-// note as "pitch:velocity" (0-127). An empty step is a rest.
+// note as "pitch:velocity" (0-127). An empty step is a rest. A step that
+// spans more than one step is prefixed "<hold>@" - absent means 1, so
+// patterns saved before hold existed still load.
 static juce::String seqTrackToString (const eighty::SynthEngine::SeqTrack& track)
 {
     juce::String s;
@@ -167,6 +169,7 @@ static juce::String seqTrackToString (const eighty::SynthEngine::SeqTrack& track
     {
         if (i > 0) s << ";";
         const auto& st = track.steps[(size_t) i];
+        if (st.count > 0 && st.hold > 1) s << (int) st.hold << "@";
         for (uint8_t n = 0; n < st.count; ++n)
         {
             if (n > 0) s << ",";
@@ -184,12 +187,22 @@ static void seqTrackFromString (const juce::String& s, eighty::SynthEngine::SeqT
     {
         Step step;
         if (i < steps.size() && steps[i].isNotEmpty())
-            for (auto tok : juce::StringArray::fromTokens (steps[i], ",", ""))
+        {
+            auto body = steps[i];
+            int hold = 1;
+            if (body.contains ("@"))
+            {
+                hold = body.upToFirstOccurrenceOf ("@", false, false).getIntValue();
+                body = body.fromFirstOccurrenceOf ("@", false, false);
+            }
+            for (auto tok : juce::StringArray::fromTokens (body, ",", ""))
             {
                 const int note = tok.upToFirstOccurrenceOf (":", false, false).getIntValue();
                 const int vel  = tok.fromFirstOccurrenceOf (":", false, false).getIntValue();
                 step.add (note, (float) juce::jlimit (1, 127, vel) / 127.f);
             }
+            step.hold = (uint8_t) juce::jlimit (1, Step::kMaxHold, hold);
+        }
         track.steps[(size_t) i].clear();
         track.steps[(size_t) i] = step;
     }

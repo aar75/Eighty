@@ -99,8 +99,13 @@ running sequence**, which is the point of it.
   chord, and the cursor advances when you let go. Stops after one lap.
 - **Click** a step to move the cursor there, and to drop in any keys you are
   currently holding. **Drag** up/down transposes a step, **double-click**
-  clears it, **right-click** opens the step/track menu (clear, set loop
-  length here, copy A/B, transpose an octave).
+  clears it, **right-click** opens the step/track menu (hold, clear, set
+  loop length here, copy A/B, transpose an octave).
+- **Held steps** — a step can occupy more than one step, so a bass note can
+  ring under a busier line. Drag a step left/right, or pick "Hold for" from
+  its menu. The steps it covers are greyed and skipped, and a tie line runs
+  through them; Gate still shortens the note, measured against the whole
+  held length rather than one step. Holds wrap around the loop end.
 
 Live notes are tagged with a different voice owner from each sequencer
 track, so a step ending never releases a note you are holding, and a busy

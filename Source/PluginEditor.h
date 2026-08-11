@@ -322,7 +322,10 @@ private:
     void say (const juce::String& s) { if (onMessage) onMessage (s); }
 
     EightyProcessor& proc;
-    int dragTrack = -1, dragStep = -1, dragStartY = 0, dragApplied = 0;
+    int dragTrack = -1, dragStep = -1, dragApplied = 0;
+    int dragStartX = 0, dragStartY = 0;
+    int dragAxis = 0;            // 0 undecided, 1 transpose, 2 sustain length
+    int dragBaseHold = 1;
 };
 
 // -------------------------------------------- selection ring (arrow keys)
