@@ -1,0 +1,149 @@
+name: Build release zip
+
+# Builds Eighty (VST3 + AU) on Apple Silicon and packages it into a
+# ready-to-share zip: the two plugin bundles, the Install.command
+# double-click installer, and a README with install instructions -
+# the same bundle that used to be put together by hand in share_out/.
+#
+# Two ways to get a zip out of this:
+#   - Push a tag like v0.2.0: builds, and publishes a real GitHub Release
+#     with the zip attached, downloadable by anyone without a GitHub
+#     account.
+#   - Run it manually (Actions tab -> Build release zip -> Run workflow):
+#     always uploads the zip as a workflow artifact (needs a GitHub login
+#     to download, and expires after 30 days); tick "publish_release" to
+#     also cut a prerelease-tagged GitHub Release from it, for sharing a
+#     build ahead of a version bump.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label for the zip (e.g. 0.2.0). Defaults to the commit it was built from."
+        required: false
+        default: ""
+      publish_release:
+        description: "Also publish this build as a GitHub Release (prerelease)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Build and package (Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          set -euo pipefail
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="dev-$SHORT_SHA"
+          fi
+          {
+            echo "version=$VERSION"
+            echo "ref=$SHORT_SHA"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building Eighty $VERSION from $SHORT_SHA"
+
+      # JUCE isn't checked in - CMakeLists.txt fetches it fresh (git clone,
+      # ~450 MB) when there's no sibling ../JUCE checkout, which is always
+      # true on a runner. Caching the fetched copy turns a ~2 minute clone
+      # into a cache hit on every run after the first.
+      - name: Cache fetched JUCE checkout
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/juce-src
+          key: juce-src-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build VST3 + AU
+        run: |
+          cmake --build build --config Release \
+            --target Eighty_VST3 Eighty_AU \
+            -j "$(sysctl -n hw.ncpu)"
+
+      - name: Verify the plugin is arm64 and signed
+        run: |
+          set -euo pipefail
+          BIN="build/Eighty_artefacts/Release/VST3/Eighty.vst3/Contents/MacOS/Eighty"
+          file "$BIN" | grep -q "arm64" || { echo "not arm64"; exit 1; }
+          codesign -dv "$BIN"
+
+      - name: Assemble package
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          REF: ${{ steps.version.outputs.ref }}
+        run: |
+          set -euo pipefail
+          NAME="Eighty-AppleSilicon-$VERSION"
+          STAGE="dist/$NAME"
+          mkdir -p "$STAGE"
+
+          cp -R "build/Eighty_artefacts/Release/VST3/Eighty.vst3" "$STAGE/"
+          cp -R "build/Eighty_artefacts/Release/AU/Eighty.component" "$STAGE/"
+
+          cp packaging/Install.command "$STAGE/Install.command"
+          chmod +x "$STAGE/Install.command"
+
+          sed \
+            -e "s/__VERSION__/$VERSION/" \
+            -e "s/__DATE__/$(date -u +%Y-%m-%d)/" \
+            -e "s/__REF__/$REF/" \
+            packaging/README.txt.in > "$STAGE/README.txt"
+
+          # Matches how the hand-built share_out/ bundles were zipped, so a
+          # download from CI behaves identically to one built locally:
+          # ditto (not `zip`) preserves the code signature and resource
+          # forks that a plain zip would silently strip.
+          ( cd dist && ditto -c -k --sequesterRsrc --keepParent "$NAME" "$NAME.zip" )
+
+          {
+            echo "zip_path=dist/$NAME.zip"
+            echo "zip_name=$NAME.zip"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.zip_name }}
+          path: ${{ steps.package.outputs.zip_path }}
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (tagged build)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package.outputs.zip_path }}
+          generate_release_notes: true
+
+      - name: Publish GitHub Release (manual, prerelease)
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: manual-${{ github.run_id }}
+          name: Eighty ${{ steps.version.outputs.version }} (manual build)
+          prerelease: true
+          files: ${{ steps.package.outputs.zip_path }}

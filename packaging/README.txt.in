@@ -1,0 +1,57 @@
+EIGHTY — CS-80 x Jupiter-8 synth plugin
+Version: __VERSION__  (built __DATE__ from __REF__)
+Apple Silicon Macs only (M1 / M2 / M3 / M4). Won't run on an Intel Mac.
+
+WHAT'S IN THIS FOLDER
+  Eighty.vst3        - VST3 plugin (Ableton, Cubase, Studio One, Reaper, etc.)
+  Eighty.component   - Audio Unit / AU plugin (Logic Pro, GarageBand, MainStage)
+  Install.command     - double-click to install both automatically
+
+────────────────────────────────────────
+EASY INSTALL (recommended)
+────────────────────────────────────────
+1. Double-click "Install.command".
+2. macOS will likely refuse to run it the first time and say it's from an
+   unidentified developer. If so:
+     - Right-click (or Control-click) "Install.command" -> choose "Open"
+     - Click "Open" again in the dialog that appears
+   This is a one-time step for the installer script itself.
+3. A Terminal window will open, copy the plugins into place, and print
+   "Done." Press Return to close it.
+4. Restart your DAW (or use its "rescan plugins" option) and look for
+   "Eighty" under both VST3 and Audio Unit instruments.
+
+────────────────────────────────────────
+MANUAL INSTALL (if you'd rather not run the script)
+────────────────────────────────────────
+1. Copy Eighty.vst3 to:       ~/Library/Audio/Plug-Ins/VST3/
+2. Copy Eighty.component to:  ~/Library/Audio/Plug-Ins/Components/
+   (In Finder: Go menu -> Go to Folder... -> paste the path above)
+3. Open Terminal and run these two commands so Gatekeeper doesn't block
+   the plugin (it's signed ad-hoc, not through the Mac App Store or a
+   paid Apple Developer ID, so macOS is extra cautious about it):
+       xattr -cr ~/Library/Audio/Plug-Ins/VST3/Eighty.vst3
+       xattr -cr ~/Library/Audio/Plug-Ins/Components/Eighty.component
+4. Restart your DAW and rescan plugins.
+
+────────────────────────────────────────
+WHAT'S NEW
+────────────────────────────────────────
+See the release notes on GitHub for what changed in this build:
+  https://github.com/aar75/Eighty/releases
+
+────────────────────────────────────────
+TROUBLESHOOTING
+────────────────────────────────────────
+"Eighty is damaged and can't be opened" / plugin doesn't show up in your DAW:
+  - Almost always means the quarantine flag wasn't cleared. Re-run step 3
+    of the manual install (the two `xattr -cr` commands) and rescan.
+
+Logic Pro / MainStage still doesn't see it:
+  - Open Terminal and run:  auval -v aumu Ei80 ArjR
+    This validates the AU directly and will show any error in detail.
+
+Presets and settings from a previous version are kept - they live in
+~/Library/Eighty/ and are not touched by installing.
+
+Issues and questions: https://github.com/aar75/Eighty/issues
