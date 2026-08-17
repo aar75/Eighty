@@ -6,6 +6,7 @@
 #include "FactoryPresets.h"
 #include "DSP/SynthEngine.h"
 #include "DSP/Effects.h"
+#include "Recorder.h"
 
 // Lock-free scope feed: audio thread pushes, UI thread pulls. Stereo, so
 // the header can drive both the waveform trace and the lissajous/vector
@@ -117,6 +118,54 @@ private:
     std::atomic<bool> learning { false };
 };
 
+// Trackpad gestures reaching the audio thread.
+//
+// Touches arrive on the message thread at screen rates, and none of them may
+// touch the engine there. They go through this instead, drained at the top of
+// processBlock - the same one-block granularity the UI keyboard already has,
+// and nothing is shared but the FIFO.
+struct GestureMsg
+{
+    enum Type : uint8_t { kArm, kNote, kLaneOff, kPatternStep, kRibbon, kPressure, kBright };
+
+    Type    type = kArm;
+    int8_t  lane = 0;
+    int8_t  model = -1;      // 0 = CS-80, 1 = JP-8, -1 = follow the engine mode
+    bool    flag = false;    // arm: pattern target. laneOff: damp.
+    int     note = 0;
+    float   value = 0.f;     // velocity / semitones / 0..1
+    int     dir = 1;
+};
+
+class GestureQueue
+{
+public:
+    static constexpr int kSize = 512;
+
+    void push (const GestureMsg& m)
+    {
+        int s1, n1, s2, n2;
+        fifo.prepareToWrite (1, s1, n1, s2, n2);
+        if (n1 > 0)      buf[(size_t) s1] = m;
+        else if (n2 > 0) buf[(size_t) s2] = m;
+        fifo.finishedWrite (n1 + n2);
+    }
+
+    template <typename Fn>
+    void drain (Fn&& apply)
+    {
+        int s1, n1, s2, n2;
+        fifo.prepareToRead (kSize, s1, n1, s2, n2);
+        for (int i = 0; i < n1; ++i) apply (buf[(size_t) (s1 + i)]);
+        for (int i = 0; i < n2; ++i) apply (buf[(size_t) (s2 + i)]);
+        fifo.finishedRead (n1 + n2);
+    }
+
+private:
+    juce::AbstractFifo fifo { kSize };
+    std::array<GestureMsg, kSize> buf {};
+};
+
 class EightyProcessor : public juce::AudioProcessor
 {
 public:
@@ -154,6 +203,9 @@ public:
     eighty::SynthEngine engine;
     std::atomic<float> uiBend { 0.f };       // set by UI pitch wheel / arrow keys
     std::atomic<bool> uiBendActive { false };
+
+    // Trackpad strum / ribbon, pushed by the editor, applied in processBlock
+    GestureQueue gestures;
     std::atomic<int> activeVoices { 0 };
     std::atomic<int> lastLearnedCC { -1 };
 
@@ -197,6 +249,21 @@ public:
     static juce::String getFactoryPresetName (int index);
     void loadFactoryPreset (int index);
 
+    // ---- audio recording ----
+    // Captures the final stereo output - post FX, post inserts, post master
+    // volume and limiter, the same point the scopes read - to a stereo WAV
+    // beside the presets. Deliberately not a parameter: it writes files, and
+    // nothing that writes files should be reachable from host automation or
+    // be restored by loading a patch.
+    static juce::File recordingsFolder();
+    bool startRecording (juce::String& error);
+    void stopRecording() { recorder.stop(); }
+    bool isRecording() const { return recorder.isRecording(); }
+    double recordedSeconds() const { return recorder.elapsedSeconds(); }
+    // Non-zero means the disk fell far enough behind to leave a gap.
+    juce::int64 recordingGapSamples() const { return recorder.droppedSamples(); }
+    juce::File lastRecording() const { return recorder.lastFile(); }
+
     static juce::File presetFolder();
     juce::Array<juce::File> presetFiles() const;
     bool savePreset (const juce::String& name, juce::String& error);
@@ -217,6 +284,7 @@ public:
 private:
     void updateParameters();
     void handleMidiEvent (const juce::MidiMessage& m);
+    void applyGesture (const GestureMsg&);
 
     juce::ValueTree soundToValueTree();         // params + key map + pattern
     void soundFromValueTree (const juce::ValueTree&);
@@ -243,6 +311,8 @@ private:
     std::map<juce::String, std::atomic<float>*> raw;
     float rawVal (const char* id) const { return raw.at (id)->load(); }
 
+    eighty::AudioRecorder recorder;
+
     eighty::Chorus chorus;
     eighty::StereoDelay delay;
     eighty::Tremolo tremolo;
@@ -251,7 +321,7 @@ private:
     std::array<std::atomic<uint8_t>, 128> keyZones;
 
     juce::AudioBuffer<float> scratch;
-    bool lastArpOn = false;
+    bool lastArpOn[2] = { false, false };
     bool lastHold = false;
     bool lastSeqRec = false;
     bool lastSeqPlay = false;
@@ -262,6 +332,10 @@ private:
     // Hosted synth layer gain (mixer level x mute/solo), ramped across the
     // block so hitting MUTE is a fade rather than a click.
     float synthGain = 0.8f, lastSynthGain = 0.8f;
+
+    // Trackpad cross-axis brilliance: an offset over the panel macro, held
+    // between blocks so a finger parked halfway up the pad stays there.
+    float gestureBright = 0.f;
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (EightyProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EightyProcessor)

@@ -1,5 +1,6 @@
 #pragma once
 #include "PluginProcessor.h"
+#include "Gesture.h"
 
 // ------------------------------------------------- palette: "Eighty Dark"
 // Dark blue-grey, from the Claude Design handoff. The names carry the same
@@ -100,6 +101,20 @@ public:
             onRightClick (e.getScreenPosition());
         else
             juce::Slider::mouseDown (e);
+    }
+};
+
+// ------------------------------------------------ button w/ right-click
+// In the LearnSlider idiom: a plain button that also offers a context menu.
+class MenuButton : public juce::TextButton
+{
+public:
+    using juce::TextButton::TextButton;
+    std::function<void()> onRightClick;
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu() && onRightClick) onRightClick();
+        else juce::TextButton::mouseDown (e);
     }
 };
 
@@ -389,6 +404,43 @@ private:
     int dragBaseHold = 1;
 };
 
+// ------------------------------------------------------- touch monitor
+// Draws the trackpad as the surface it is being played as: where each finger
+// is, which string it is sitting on, which engine it drives and what it last
+// struck. Off by default (SETTINGS > Show touch monitor), and even then only
+// on screen while a gesture key is held - there is nothing to watch
+// otherwise, and it sits over the panel while it is up.
+//
+// Everything here is read back from the gesture engine and the synth rather
+// than recomputed, so what you see is what was actually played: the string
+// grid comes from GestureEngine::slots, the notes from the same latched set
+// the strum lays out, and the ringing dots from the voices still sounding.
+class TouchMonitor : public juce::Component, private juce::Timer
+{
+public:
+    TouchMonitor (EightyProcessor&, const eighty::GestureEngine&);
+    void paint (juce::Graphics&) override;
+    void setActive (bool);
+
+    static constexpr int prefW = 566, prefH = 244;
+
+private:
+    void timerCallback() override { repaint(); }
+
+    // The pad is drawn to a real trackpad's proportions, and the strum axis
+    // may be either of them - so positions go through one mapping rather
+    // than being written out twice.
+    juce::Point<float> padPoint (juce::Rectangle<float> pad, float along, float cross) const;
+    void paintPad (juce::Graphics&, juce::Rectangle<float> pad,
+                   const int* notes, int numNotes, int slots);
+    void paintLane (juce::Graphics&, juce::Rectangle<int> area, int lane,
+                    const int* notes, int numNotes, int slots);
+    static juce::Colour modelColour (int model);
+
+    EightyProcessor& proc;
+    const eighty::GestureEngine& gesture;
+};
+
 // -------------------------------------------- selection ring (arrow keys)
 class SelectionHalo : public juce::Component
 {
@@ -491,6 +543,18 @@ private:
     void scanNoteKeys();
     void handleActionKey (juce::juce_wchar c);
     void showLearnMenu (const juce::String& paramID, juce::Point<int> screenPos);
+    void showSettingsMenu();
+
+    // ---- trackpad gestures -------------------------------------------
+    // The pad is captured only while a gesture key is held, so scanning the
+    // keys is what arms and disarms the whole thing. Touches come back on
+    // the message thread and leave through the processor's gesture queue -
+    // the editor never speaks to the engine directly.
+    void setupTrackpad();
+    void scanGestureKeys();
+    void applyGestureSettings();
+    void setGestureMode (eighty::GestureEngine::Mode);
+    float gestureParam (const char* id) const;
     void setEngineView (bool jupiter);
     void updateModeVisibility (int mode);
     void layoutRows();
@@ -525,6 +589,13 @@ private:
     };
     std::vector<PresetEntry> presetEntries() const;
     void applyPresetEntry (const PresetEntry&);
+
+    // audio recorder (header): one button, a running time, and the file it
+    // wrote. Not a parameter - see EightyProcessor::startRecording.
+    void buildRecorder();
+    void toggleRecording();
+    void showRecorderMenu();
+    void updateRecorder();
 
     void buildPresetBar();
     void showPresetMenu();
@@ -601,7 +672,10 @@ private:
 
     // preset bar
     juce::TextButton presetPrevBtn { "<" }, presetNextBtn { ">" },
-                     presetNameBtn { "Init" }, presetSaveBtn { "SAVE" };
+                     presetNameBtn { "Init" }, presetSaveBtn { "SAVE" },
+                     settingsBtn { "SETTINGS" };
+    MenuButton recBtn { "RECORD" };
+    juce::Label recTime;
     std::unique_ptr<juce::AlertWindow> saveWindow;
     juce::String shownPresetName;
     juce::MidiKeyboardComponent keyboard;
@@ -611,6 +685,7 @@ private:
     MiniKnob *splitKnob = nullptr, *balKnob = nullptr, *volKnob = nullptr,
              *tuneKnob = nullptr, *limitKnob = nullptr, *widthKnob = nullptr;
     std::unique_ptr<KeyZoneStrip> zoneStrip;
+    std::unique_ptr<TouchMonitor> touchMonitor;
     std::unique_ptr<LedToggle> csLowLed;
     SelectionHalo halo;
     juce::TooltipWindow tooltipWindow { this, 400 };
@@ -642,6 +717,13 @@ private:
     int bendDir = 0;
     bool wheelActive = false;
     int learnFlashCC = -1;
+
+    // trackpad state
+    eighty::TrackpadSource trackpad;
+    eighty::GestureEngine gesture;
+    bool trackpadAttached = false;
+    bool strumKeyWasDown = false;
+    bool strumLatched = false, armedPattern = false;
 
     static constexpr const char* noteKeys = "awsedftgyhujkolp;";
 

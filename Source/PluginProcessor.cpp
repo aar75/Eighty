@@ -268,6 +268,7 @@ void EightyProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         engine.setOversample (factors[juce::jlimit (0, 3, (int) rawVal (ID::oversample))]);
     }
     engine.prepare (sampleRate, juce::jmax (samplesPerBlock, 32));
+    recorder.prepare (sampleRate);   // stops a take in progress: the rate changed
     chorus.prepare (sampleRate, samplesPerBlock);
     delay.prepare (sampleRate);
     tremolo.prepare (sampleRate);
@@ -401,7 +402,7 @@ void EightyProcessor::updateParameters()
     vp.ring.attack = rawVal (ID::ringAtk);
     vp.ring.decay  = rawVal (ID::ringDec);
 
-    vp.brilliance   = rawVal (ID::brilliance);
+    vp.brilliance   = juce::jlimit (-1.f, 1.f, rawVal (ID::brilliance) + gestureBright);
     vp.resOffset    = rawVal (ID::resOffset);
     vp.velBendSemis = rawVal (ID::velBend);
 
@@ -461,6 +462,9 @@ void EightyProcessor::updateParameters()
     jp.fS = rawVal (ID::jpFEnvS); jp.fR = rawVal (ID::jpFEnvR);
     jp.aA = rawVal (ID::jpAEnvA); jp.aD = rawVal (ID::jpAEnvD);
     jp.aS = rawVal (ID::jpAEnvS); jp.aR = rawVal (ID::jpAEnvR);
+
+    es.arpMult    = (int) rawVal (ID::arpMult);
+    es.strumPluck = rawVal (ID::tpArtic) > 0.5f;
 
     es.engineMode = (int) rawVal (ID::engineMode);
     es.splitPoint = (int) rawVal (ID::splitPoint);
@@ -555,33 +559,34 @@ void EightyProcessor::updateParameters()
     // stay honest). REC and PLAY *do* coexist: recording writes at the
     // cursor while playback runs, which is how you overdub the second
     // track against the first.
-    bool arpOnRaw   = rawVal (ID::arpOn)   > 0.5f;
+    const bool arpRaw[2] = { rawVal (ID::csArpOn) > 0.5f, rawVal (ID::jpArpOn) > 0.5f };
     bool seqRecRaw  = rawVal (ID::seqRec)  > 0.5f;
     bool seqPlayRaw = rawVal (ID::seqPlay) > 0.5f;
 
-    const bool arpOnRising   = arpOnRaw   && ! lastArpOn;
+
     const bool seqRecRising  = seqRecRaw  && ! lastSeqRec;
     const bool seqPlayRising = seqPlayRaw && ! lastSeqPlay;
 
     auto forceOff = [this] (const char* id) { apvts.getParameter (id)->setValueNotifyingHost (0.f); };
 
-    if (arpOnRising && (seqRecRaw || seqPlayRaw))
+    // The arpeggiator and the sequencer used to switch each other off. They
+    // no longer do: with both running, each track's chord becomes the figure
+    // its own arpeggiator walks, so a sequence of chords can be turned into a
+    // sequence of arpeggios with one switch - and live playing still
+    // arpeggiates over the top of it.
+    juce::ignoreUnused (seqRecRising, seqPlayRising);
+
+    // Each engine's arp switch is handed over on its own edge, so flipping
+    // one never disturbs what the other is doing.
+    for (int m = 0; m < 2; ++m)
     {
-        seqRecRaw = seqPlayRaw = false;
-        forceOff (ID::seqRec); forceOff (ID::seqPlay);
+        if (arpRaw[m] == lastArpOn[m]) continue;
+        es.arpOn[m] = arpRaw[m];
+        engine.arpModeChanged (m, arpRaw[m]);
+        lastArpOn[m] = arpRaw[m];
     }
-    if ((seqRecRising || seqPlayRising) && arpOnRaw)
-    {
-        arpOnRaw = false;
-        forceOff (ID::arpOn);
-    }
-    if (arpOnRaw != lastArpOn)
-    {
-        es.arpOn = arpOnRaw;
-        engine.arpModeChanged (arpOnRaw);
-        lastArpOn = arpOnRaw;
-    }
-    es.arpOn = arpOnRaw;
+    es.arpOn[0] = arpRaw[0];
+    es.arpOn[1] = arpRaw[1];
 
     if (seqRecRaw != lastSeqRec)
     {
@@ -609,6 +614,51 @@ void EightyProcessor::updateParameters()
     {
         engine.setHold (holdOn);
         lastHold = holdOn;
+    }
+}
+
+// One trackpad gesture, now on the audio thread. Everything here goes
+// through the engine's ordinary note path - the strum is not a special case
+// in the voice allocator, only a different set of fingers driving it.
+void EightyProcessor::applyGesture (const GestureMsg& g)
+{
+    switch (g.type)
+    {
+        case GestureMsg::kArm:
+            engine.strumArm (g.flag, g.dir != 0);
+            if (! g.flag)
+            {
+                gestureBright = 0.f;
+                engine.setChannelPressure (0.f);
+            }
+            break;
+
+        case GestureMsg::kNote:
+            engine.strumNote (g.lane, g.note, g.value, g.model);
+            break;
+
+        case GestureMsg::kLaneOff:
+            engine.strumLaneOff (g.lane, g.flag);
+            break;
+
+        case GestureMsg::kPatternStep:
+            engine.strumPatternStep (g.lane, g.dir);
+            break;
+
+        case GestureMsg::kRibbon:
+            engine.setRibbon (g.model, g.value);
+            break;
+
+        case GestureMsg::kPressure:
+            engine.setChannelPressure (juce::jlimit (0.f, 1.f, g.value));
+            break;
+
+        // The cross axis riding BRILLIANCE is an offset over the panel knob,
+        // not a write to it: the finger is a performance move, and it should
+        // no more end up in the patch than the pitch wheel does.
+        case GestureMsg::kBright:
+            gestureBright = juce::jlimit (-1.f, 1.f, g.value * 2.f - 1.f);
+            break;
     }
 }
 
@@ -668,6 +718,12 @@ void EightyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         if (auto pos = ph->getPosition())
             if (auto bpm = pos->getBpm())
                 if (*bpm > 1.0) { hostBpm = *bpm; hostBpmValid = true; }
+
+    // Trackpad gestures first, so a strum struck between blocks is already
+    // in the voice pool by the time this block's parameters are applied to
+    // it. Timestamps land at the top of the block, as the UI keyboard's do.
+    engine.echoBase = 0;
+    gestures.drain ([this] (const GestureMsg& g) { applyGesture (g); });
 
     updateParameters();
 
@@ -798,6 +854,10 @@ void EightyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     // scope feed (stereo, post everything: waveform + lissajous)
     scopeFifo.push (left, right, total);
 
+    // The recorder taps exactly here, so what lands in the file is what the
+    // scopes draw and what you hear - not an earlier, tidier version of it.
+    recorder.write (left, right, total);
+
     activeVoices.store (engine.activeVoiceCount());
 }
 
@@ -908,6 +968,22 @@ juce::File EightyProcessor::presetFolder()
 {
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
         .getChildFile ("Eighty").getChildFile ("Presets");
+}
+
+// ------------------------------------------------------- audio recording
+juce::File EightyProcessor::recordingsFolder()
+{
+    return presetFolder().getSiblingFile ("Recordings");
+}
+
+bool EightyProcessor::startRecording (juce::String& error)
+{
+    // Named for the patch and the moment, so a folder full of takes is still
+    // navigable a week later and nothing ever overwrites anything.
+    const auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S");
+    const auto name = juce::File::createLegalFileName (
+        "Eighty " + presetName + " " + stamp + ".wav");
+    return recorder.start (recordingsFolder().getChildFile (name), error);
 }
 
 juce::Array<juce::File> EightyProcessor::presetFiles() const
