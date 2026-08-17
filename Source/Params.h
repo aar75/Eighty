@@ -126,11 +126,17 @@ namespace ID
     inline constexpr const char* tempo      = "tempo";
 
     // Arpeggiator
-    inline constexpr const char* arpOn      = "arpOn";
+    // Per engine: the CS-80 can arpeggiate a chord while the JP-8 holds it,
+    // or the other way round. Everything else about the arp is shared.
+    inline constexpr const char* csArpOn    = "csArpOn";
+    inline constexpr const char* jpArpOn    = "jpArpOn";
     inline constexpr const char* arpMode    = "arpMode";
     inline constexpr const char* arpSync    = "arpSync";
     inline constexpr const char* arpDiv     = "arpDiv";
     inline constexpr const char* arpOctaves = "arpOctaves";
+    // Arp notes per DIV step. x1 is the step clock itself; above that the arp
+    // subdivides it, which is how an arpeggio runs *inside* a sequenced chord.
+    inline constexpr const char* arpMult    = "arpMult";
     inline constexpr const char* arpGate    = "arpGate";
 
     // Step sequencer: 2 tracks x 16 steps, shares the arp's rate/div/sync/
@@ -145,6 +151,27 @@ namespace ID
     inline constexpr const char* seqBEng  = "seqBEng";
     inline constexpr const char* seqALen  = "seqALen";
     inline constexpr const char* seqBLen  = "seqBLen";
+
+    // Trackpad performance. The pad is treated as a playing surface rather
+    // than a pointer: a strum across the notes you are holding, and the
+    // ribbon the CS-80 panel never got. All of it lives behind a held key,
+    // so nothing here changes how the synth behaves until you ask for it.
+    inline constexpr const char* tpOn        = "tpOn";
+    inline constexpr const char* tpKey       = "tpKey";        // Q / Space / `
+    inline constexpr const char* tpLatch     = "tpLatch";      // key toggles, not holds
+    inline constexpr const char* tpTarget    = "tpTarget";     // Chord / Pattern
+    inline constexpr const char* tpSpan      = "tpSpan";       // octaves across the pad
+    inline constexpr const char* tpForce     = "tpForce";      // stroke speed -> velocity
+    inline constexpr const char* tpAxis      = "tpAxis";       // strum along X / Y
+    inline constexpr const char* tpCross     = "tpCross";      // cross-axis destination
+    inline constexpr const char* tpArtic     = "tpArtic";      // Hold / Pluck
+    inline constexpr const char* tpLift      = "tpLift";       // Ring / Damp / Gesture
+    inline constexpr const char* tpFingers   = "tpFingers";    // Per Engine / Both
+    inline constexpr const char* tpFreeze    = "tpFreeze";     // freeze the pointer
+    inline constexpr const char* tpMonitor   = "tpMonitor";    // on-screen touch monitor
+    inline constexpr const char* tpRibbon    = "tpRibbon";     // ribbon key enabled
+    inline constexpr const char* tpRibbonRng = "tpRibbonRng";  // semitones at the edge
+    inline constexpr const char* tpRibbonAbs = "tpRibbonAbs";  // absolute, not relative
 
     // FX
     inline constexpr const char* chorusOn    = "chorusOn";
@@ -368,13 +395,16 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         NormalisableRange<float>(20.f, 300.f, 0.1f), 120.f));
 
     // Arp
-    p.push_back(std::make_unique<Pb>(ID::arpOn, "Arp On", false));
+    p.push_back(std::make_unique<Pb>(ID::csArpOn, "CS Arp", false));
+    p.push_back(std::make_unique<Pb>(ID::jpArpOn, "JP Arp", false));
     p.push_back(std::make_unique<Pc>(ID::arpMode, "Arp Mode",
         StringArray { "Up", "Down", "Up-Down", "Random", "As Played" }, 0));
     p.push_back(std::make_unique<Pb>(ID::arpSync, "Arp Sync", true));
     p.push_back(std::make_unique<Pc>(ID::arpDiv, "Arp Div",
         StringArray { "1/1", "1/2", "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32" }, 5));
     p.push_back(std::make_unique<Pi>(ID::arpOctaves, "Arp Octaves", 1, 4, 1));
+    p.push_back(std::make_unique<Pc>(ID::arpMult, "Arp Rate",
+        StringArray { "x1", "x2", "x3", "x4", "x6", "x8" }, 0));
     p.push_back(std::make_unique<P>(ID::arpGate, "Arp Gate", NormalisableRange<float>(0.05f, 1.f, 0.f), 0.6f));
 
     // Step sequencer (2 tracks)
@@ -389,6 +419,31 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     p.push_back(std::make_unique<Pc>(ID::seqBEng, "Seq B Engine", seqEngines, 0));
     p.push_back(std::make_unique<Pi>(ID::seqALen, "Seq A Length", 1, 16, 16));
     p.push_back(std::make_unique<Pi>(ID::seqBLen, "Seq B Length", 1, 16, 16));
+
+    // Trackpad performance (strum / ribbon)
+    p.push_back(std::make_unique<Pb>(ID::tpOn, "Trackpad", true));
+    p.push_back(std::make_unique<Pc>(ID::tpKey, "Strum Key",
+        StringArray { "Q", "Space", "`" }, 0));
+    p.push_back(std::make_unique<Pb>(ID::tpLatch, "Strum Latch", false));
+    p.push_back(std::make_unique<Pc>(ID::tpTarget, "Strum Plays",
+        StringArray { "Chord", "Pattern" }, 0));
+    p.push_back(std::make_unique<Pi>(ID::tpSpan, "Strum Span", 1, 4, 2));
+    p.push_back(std::make_unique<P>(ID::tpForce, "Strum Force", pct, 0.6f));
+    p.push_back(std::make_unique<Pc>(ID::tpAxis, "Strum Axis",
+        StringArray { "X", "Y" }, 0));
+    p.push_back(std::make_unique<Pc>(ID::tpCross, "Cross Axis",
+        StringArray { "Off", "Velocity", "Brilliance", "Pressure" }, 1));
+    p.push_back(std::make_unique<Pc>(ID::tpArtic, "Strum Articulation",
+        StringArray { "Hold", "Pluck" }, 0));
+    p.push_back(std::make_unique<Pc>(ID::tpLift, "On Lift",
+        StringArray { "Ring", "Damp", "Gesture" }, 2));
+    p.push_back(std::make_unique<Pc>(ID::tpFingers, "Two Fingers",
+        StringArray { "Per Engine", "Both Engines" }, 0));
+    p.push_back(std::make_unique<Pb>(ID::tpFreeze, "Freeze Pointer", true));
+    p.push_back(std::make_unique<Pb>(ID::tpMonitor, "Touch Monitor", false));
+    p.push_back(std::make_unique<Pb>(ID::tpRibbon, "Ribbon", true));
+    p.push_back(std::make_unique<Pi>(ID::tpRibbonRng, "Ribbon Range", 1, 24, 12));
+    p.push_back(std::make_unique<Pb>(ID::tpRibbonAbs, "Ribbon Absolute", false));
 
     // FX
     p.push_back(std::make_unique<Pb>(ID::chorusOn, "Chorus On", true));

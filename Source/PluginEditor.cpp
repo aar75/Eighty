@@ -143,7 +143,10 @@ juce::String tipFor (const juce::String& id)
         { ID::jpGlideMode, "JP-8 glide: off, only on overlapping notes, or always" },
         { ID::bendRange,   "Pitch wheel range, in semitones" },
         { ID::hold,        "Latch notes after release (shortcut: B). A new chord replaces the held one" },
-        { ID::arpOn,     "Enable the arpeggiator (shortcut: N)" },
+        { ID::csArpOn,   "Arpeggiate the CS-80 card. Per engine, so the CS can walk a chord "
+                         "while the JP-8 holds it underneath (shortcut: N toggles both)" },
+        { ID::jpArpOn,   "Arpeggiate the JP-8 card. Per engine, so the JP can walk a chord "
+                         "while the CS-80 holds it underneath (shortcut: N toggles both)" },
         { ID::seqRec,    "Step record into the armed track from the cursor: play a note or chord, and the "
                          "cursor moves on when you let go. Stops after one lap of the loop" },
         { ID::seqPlay,   "Run both sequencer tracks. You can keep playing live on top of them" },
@@ -161,6 +164,9 @@ juce::String tipFor (const juce::String& id)
                          "The step length is this against the DIV note division" },
         { ID::arpDiv,    "Note division: how long one arp or sequencer step is against the tempo" },
         { ID::arpOctaves,"Repeat the pattern across extra octaves" },
+        { ID::arpMult,   "Arp notes per DIV step. x1 is the step clock itself; above that the "
+                         "arp subdivides it - which is how an arpeggio runs inside a sequenced "
+                         "chord instead of only changing when the chord does" },
         { ID::arpGate,   "Note length within each step" },
         { ID::chorusOn,    "Bucket-brigade style stereo chorus" },
         { ID::chorusMode,  "I: wide and slow. II: faster and deeper. ENS: three taps, the "
@@ -527,9 +533,16 @@ void EightyLNF::drawButtonBackground (juce::Graphics& g, juce::Button& b,
 {
     auto r = b.getLocalBounds().toFloat().reduced (0.5f);
     const bool active = down || b.getToggleState();
-    g.setColour (active ? ui::ctrlLine : (over ? ui::ctrlBg.brighter (0.12f) : ui::ctrlBg));
+
+    // A button given its own "on" colour keeps it while it is on. The
+    // recorder needs to read as armed from across the room, which one step
+    // lighter than the panel grey does not do.
+    const auto onCol = b.isColourSpecified (juce::TextButton::buttonOnColourId)
+                     ? b.findColour (juce::TextButton::buttonOnColourId) : ui::ctrlLine;
+
+    g.setColour (active ? onCol : (over ? ui::ctrlBg.brighter (0.12f) : ui::ctrlBg));
     g.fillRoundedRectangle (r, 4.f);
-    g.setColour (active || over ? ui::knobRim : ui::ctrlLine);
+    g.setColour (active ? onCol.brighter (0.35f) : (over ? ui::knobRim : ui::ctrlLine));
     g.drawRoundedRectangle (r, 4.f, 1.f);
 }
 
@@ -2368,7 +2381,8 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     makeKnob  (secGlide, ID::bendRange, "BEND", 33);
     addAndMakeVisible (secGlide);
 
-    makeLed   (secArp, ID::arpOn, "ON");
+    makeLed   (secArp, ID::csArpOn, "CS");
+    makeLed   (secArp, ID::jpArpOn, "JP");
     makeLed   (secArp, ID::hold, "HOLD");
     makeLed   (secArp, ID::arpSync, "SYNC");
     makeChips (secArp, ID::arpMode, { "UP", "DN", "UD", "RND", "PLY" }, "MODE", 44);
@@ -2376,6 +2390,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     // The rate itself is now TEMPO, in the sequencer row: the arp and the
     // sequencer share one step clock, so there is one place to set it.
     makeKnob  (secArp, ID::arpOctaves, "OCT", 33);
+    makeChips (secArp, ID::arpMult, { "x1", "x2", "x3", "x4", "x6", "x8" }, "RATE", 40);
     makeKnob  (secArp, ID::arpGate, "GATE", 33);
     addAndMakeVisible (secArp);
 
@@ -2428,6 +2443,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     buildSeqRow();
     buildMixer();
     buildPresetBar();
+    buildRecorder();
 
     addAndMakeVisible (scope);
     addAndMakeVisible (lissajous);
@@ -2462,6 +2478,7 @@ EightyEditor::EightyEditor (EightyProcessor& p)
     setEngineView (false);
     updateModeVisibility ((int) proc.apvts.getRawParameterValue (ID::engineMode)->load());
     updateSeqReadout();            // so the strip is filled before the first tick
+    setupTrackpad();
     setWantsKeyboardFocus (true);
     addKeyListener (this);
     startTimerHz (30);
@@ -2470,8 +2487,726 @@ EightyEditor::EightyEditor (EightyProcessor& p)
 
 EightyEditor::~EightyEditor()
 {
+    // Before anything else: the pad captures events app-wide and can be
+    // holding the pointer frozen, so it has to be let go first.
+    setGestureMode (eighty::GestureEngine::Mode::off);
+    trackpad.detach();
     removeKeyListener (this);
     setLookAndFeel (nullptr);
+}
+
+// ------------------------------------------------------ trackpad gestures
+float EightyEditor::gestureParam (const char* id) const
+{
+    return proc.apvts.getRawParameterValue (id)->load();
+}
+
+void EightyEditor::setupTrackpad()
+{
+    settingsBtn.setWantsKeyboardFocus (false);
+    settingsBtn.setTooltip ("Trackpad performance: strum mode, the ribbon, and how "
+                            "they behave");
+    settingsBtn.onClick = [this] { showSettingsMenu(); };
+    addAndMakeVisible (settingsBtn);
+
+    touchMonitor = std::make_unique<TouchMonitor> (proc, gesture);
+    addChildComponent (*touchMonitor);
+
+    // What the strum plays. The engine hands back its *latched* set, which
+    // is why holding a chord with B (or leaving one under the arpeggiator)
+    // is all it takes to have something to strum.
+    gesture.cb.chord = [this] (int* dest, int maxDest, int octaves)
+    { return proc.engine.strumChord (dest, maxDest, octaves); };
+
+    auto push = [this] (const GestureMsg& m) { proc.gestures.push (m); };
+
+    gesture.cb.note = [push] (int lane, int note, float vel, int model)
+    {
+        GestureMsg m;
+        m.type = GestureMsg::kNote;
+        m.lane = (int8_t) lane;
+        m.model = (int8_t) model;
+        m.note = note;
+        m.value = vel;
+        push (m);
+    };
+
+    gesture.cb.patternStep = [push] (int lane, int dir)
+    {
+        GestureMsg m;
+        m.type = GestureMsg::kPatternStep;
+        m.lane = (int8_t) lane;
+        m.dir = dir;
+        push (m);
+    };
+
+    gesture.cb.laneOff = [push] (int lane, bool damp)
+    {
+        GestureMsg m;
+        m.type = GestureMsg::kLaneOff;
+        m.lane = (int8_t) lane;
+        m.flag = damp;
+        push (m);
+    };
+
+    gesture.cb.ribbon = [push] (int model, float semis)
+    {
+        GestureMsg m;
+        m.type = GestureMsg::kRibbon;
+        m.model = (int8_t) model;
+        m.value = semis;
+        push (m);
+    };
+
+    gesture.cb.cross = [push] (int dest, float value)
+    {
+        if (dest != eighty::GestureEngine::crossBright) return;
+        GestureMsg m;
+        m.type = GestureMsg::kBright;
+        m.value = value;
+        push (m);
+    };
+
+    gesture.cb.pressure = [push] (float value)
+    {
+        GestureMsg m;
+        m.type = GestureMsg::kPressure;
+        m.value = value;
+        push (m);
+    };
+
+    trackpad.onFrame = [this] (const eighty::TouchFrame& f) { gesture.frame (f); };
+}
+
+// ========================================================== TouchMonitor
+TouchMonitor::TouchMonitor (EightyProcessor& p, const eighty::GestureEngine& g)
+    : proc (p), gesture (g)
+{
+    // Purely a readout - it must never take a click away from the panel it
+    // is sitting over.
+    setInterceptsMouseClicks (false, false);
+    setAlwaysOnTop (true);
+}
+
+void TouchMonitor::setActive (bool on)
+{
+    if (on == isVisible()) return;
+    setVisible (on);
+    // Fingers move far faster than the editor's 30 Hz housekeeping tick, so
+    // this runs its own clock - but only while it is on screen.
+    if (on) { toFront (false); startTimerHz (60); }
+    else      stopTimer();
+}
+
+juce::Colour TouchMonitor::modelColour (int model)
+{
+    return model == eighty::modelJP8 ? ui::jpAccent
+         : model == eighty::modelCS80 ? ui::stOsc
+                              : ui::stVoice;      // follows the engine mode
+}
+
+// along = position on the strum axis, cross = the other one. Both 0..1, and
+// both measured the way the trackpad reports them - y runs from the near
+// edge upwards, so it is flipped into screen space here and nowhere else.
+juce::Point<float> TouchMonitor::padPoint (juce::Rectangle<float> pad,
+                                           float along, float cross) const
+{
+    const bool alongX = gesture.cfg.axis == 0;
+    const float x = alongX ? along : cross;
+    const float y = alongX ? cross : along;
+    return { pad.getX() + x * pad.getWidth(),
+             pad.getBottom() - y * pad.getHeight() };
+}
+
+void TouchMonitor::paintPad (juce::Graphics& g, juce::Rectangle<float> pad,
+                             const int* notes, int numNotes, int slots)
+{
+    const bool ribbon = gesture.mode() == eighty::GestureEngine::Mode::ribbon;
+    const bool alongX = gesture.cfg.axis == 0;
+
+    g.setColour (ui::scopeBg);
+    g.fillRoundedRectangle (pad, 4.f);
+    g.setColour (ui::track);
+    g.drawRoundedRectangle (pad.reduced (0.5f), 4.f, 1.f);
+
+    const float span = alongX ? pad.getWidth() : pad.getHeight();
+
+    if (ribbon)
+    {
+        // No strings on a ribbon, so the pad has to carry its own scale.
+        const auto range = juce::String ((int) gesture.cfg.ribbonRange);
+        g.setColour (ui::dimmer);
+        g.setFont (ui::mono (8.f));
+        auto edge = pad.reduced (5.f, 4.f).toNearestInt();
+        if (alongX)
+        {
+            g.drawText ("-" + range, edge, juce::Justification::bottomLeft, false);
+            g.drawText ("+" + range, edge, juce::Justification::bottomRight, false);
+        }
+        else
+        {
+            g.drawText ("+" + range, edge, juce::Justification::topRight, false);
+            g.drawText ("-" + range, edge, juce::Justification::bottomRight, false);
+        }
+
+        // What matters is the reference the bend is measured from and how far
+        // the finger has travelled off it.
+        for (int i = 0; i < gesture.laneCount(); ++i)
+        {
+            const auto L = gesture.laneState (i);
+            if (! L.active) continue;
+            const auto col = modelColour (L.model);
+            const auto ref = padPoint (pad, L.origin, 0.5f);
+            const auto now = padPoint (pad, L.pos, 0.5f);
+
+            g.setColour (ui::scopeLine);
+            if (alongX) g.drawLine (ref.x, pad.getY() + 4.f, ref.x, pad.getBottom() - 4.f, 1.f);
+            else        g.drawLine (pad.getX() + 4.f, ref.y, pad.getRight() - 4.f, ref.y, 1.f);
+
+            g.setColour (col.withAlpha (0.55f));
+            g.drawLine ({ ref, now }, 2.5f);
+        }
+    }
+    else if (slots > 0)
+    {
+        const float cell = span / (float) slots;
+        for (int s = 0; s < slots; ++s)
+        {
+            const float a0 = (float) s / (float) slots;
+            auto cellR = alongX
+                ? juce::Rectangle<float> (pad.getX() + a0 * pad.getWidth(), pad.getY(),
+                                          cell, pad.getHeight())
+                : juce::Rectangle<float> (pad.getX(), pad.getBottom() - (a0 + 1.f / (float) slots)
+                                                       * pad.getHeight(),
+                                          pad.getWidth(), cell);
+
+            // A string a finger is standing on and one that is merely still
+            // ringing are different states, and each takes the colour of the
+            // lane responsible - with two fingers on two engines, "which of
+            // us is on this string" is the whole question the display exists
+            // to answer.
+            int underLane = -1, ringLane = -1;
+            for (int i = 0; i < gesture.laneCount(); ++i)
+            {
+                const auto L = gesture.laneState (i);
+                if (L.active && L.index == s) underLane = i;
+                if (! gesture.cfg.pattern && s < numNotes
+                    && proc.engine.strumRinging (i, notes[s]))
+                    ringLane = i;
+            }
+
+            if (underLane >= 0 || ringLane >= 0)
+            {
+                const int which = underLane >= 0 ? underLane : ringLane;
+                g.setColour (modelColour (gesture.laneState (which).model)
+                                 .withAlpha (underLane >= 0 ? 0.20f : 0.09f));
+                g.fillRect (cellR.reduced (0.5f));
+            }
+
+            if (s > 0)
+            {
+                g.setColour (ui::scopeLine);
+                if (alongX) g.drawLine (cellR.getX(), pad.getY() + 3.f,
+                                        cellR.getX(), pad.getBottom() - 3.f, 1.f);
+                else        g.drawLine (pad.getX() + 3.f, cellR.getBottom(),
+                                        pad.getRight() - 3.f, cellR.getBottom(), 1.f);
+            }
+
+            // Label every string that has room for a label. Crowding the
+            // names in unreadably would be worse than leaving them out.
+            const float room = alongX ? cell : (float) 26;
+            if (room >= 17.f)
+            {
+                g.setColour (underLane >= 0
+                                 ? modelColour (gesture.laneState (underLane).model)
+                                 : ringLane >= 0 ? ui::inkSoft : ui::dim);
+                g.setFont (ui::mono (8.f));
+                const juce::String text = gesture.cfg.pattern
+                    ? juce::String (s + 1)
+                    : (s < numNotes ? noteName (notes[s]) : juce::String());
+                g.drawText (text, cellR.reduced (1.f).withTrimmedTop (2.f).toNearestInt(),
+                            juce::Justification::centredTop, false);
+            }
+        }
+    }
+    else
+    {
+        // Up top, clear of where a finger would be drawn.
+        g.setColour (ui::dimmer);
+        g.setFont (ui::sans (10.f));
+        g.drawText ("hold a chord to strum",
+                    pad.withHeight (34.f).toNearestInt(), juce::Justification::centred);
+    }
+
+    // The cross axis, where it is doing anything: a rail along the edge with
+    // each finger's position on it.
+    const int cross = gesture.cfg.cross;
+    if (cross != eighty::GestureEngine::crossOff && ! ribbon)
+    {
+        for (int i = 0; i < gesture.laneCount(); ++i)
+        {
+            const auto L = gesture.laneState (i);
+            if (! L.active) continue;
+            const auto p = padPoint (pad, L.pos, L.cross);
+            g.setColour (modelColour (L.model).withAlpha (0.4f));
+            if (alongX) g.drawLine (pad.getX(), p.y, pad.getRight(), p.y, 1.f);
+            else        g.drawLine (p.x, pad.getY(), p.x, pad.getBottom(), 1.f);
+        }
+    }
+
+    // Fingers last, over everything.
+    for (int i = 0; i < gesture.laneCount(); ++i)
+    {
+        const auto L = gesture.laneState (i);
+        if (! L.active) continue;
+        const auto p = padPoint (pad, L.pos, L.cross);
+        const auto col = modelColour (L.model);
+
+        g.setColour (col.withAlpha (0.18f));
+        g.fillEllipse (p.x - 13.f, p.y - 13.f, 26.f, 26.f);
+        g.setColour (col);
+        g.fillEllipse (p.x - 6.f, p.y - 6.f, 12.f, 12.f);
+        g.setColour (ui::scopeBg);
+        g.setFont (ui::sans (8.f, true));
+        g.drawText (juce::String (i + 1),
+                    juce::Rectangle<float> (p.x - 6.f, p.y - 6.f, 12.f, 12.f).toNearestInt(),
+                    juce::Justification::centred, false);
+    }
+}
+
+void TouchMonitor::paintLane (juce::Graphics& g, juce::Rectangle<int> area, int lane,
+                              const int* notes, int numNotes, int slots)
+{
+    const auto L = gesture.laneState (lane);
+    const bool ribbon = gesture.mode() == eighty::GestureEngine::Mode::ribbon;
+    const auto col = modelColour (L.model);
+
+    g.setColour (ui::winBg);
+    g.fillRoundedRectangle (area.toFloat(), 4.f);
+    g.setColour (L.active ? col.withAlpha (0.55f) : ui::line);
+    g.drawRoundedRectangle (area.toFloat().reduced (0.5f), 4.f, 1.f);
+
+    auto r = area.reduced (9, 7);
+
+    g.setColour (L.active ? ui::inkSoft : ui::dimmer);
+    g.setFont (ui::sans (8.5f, true));
+    g.drawText ("FINGER " + juce::String (lane + 1), r.removeFromTop (11),
+                juce::Justification::centredLeft);
+
+    // Which card this finger is driving. "AUTO" is not a hedge - it means
+    // the note follows the engine mode, which is what one finger down does.
+    {
+        const juce::String engine = L.model == eighty::modelCS80 ? "CS-80"
+                                  : L.model == eighty::modelJP8 ? "JP-8" : "AUTO";
+        auto chip = area.reduced (9, 7).removeFromTop (11).removeFromRight (46);
+        g.setColour (L.active ? col.withAlpha (0.22f) : ui::chipOff.withAlpha (0.5f));
+        g.fillRoundedRectangle (chip.toFloat().expanded (0.f, 1.f), 2.f);
+        g.setColour (L.active ? col : ui::dimmer);
+        g.setFont (ui::sans (8.f, true));
+        g.drawText (engine, chip, juce::Justification::centred);
+    }
+
+    r.removeFromTop (4);
+
+    // Nothing down, or nothing to play: say so rather than draw a note
+    // readout with nothing behind it.
+    if (! L.active || (slots <= 0 && ! ribbon))
+    {
+        g.setColour (ui::dimmer);
+        g.setFont (ui::sans (10.f));
+        g.drawText (! L.active ? "not down" : "nothing held to strum",
+                    r.removeFromTop (20), juce::Justification::centredLeft);
+        return;
+    }
+
+    if (ribbon)
+    {
+        g.setColour (ui::scopeTrace);
+        g.setFont (ui::mono (20.f));
+        g.drawText ((L.semis >= 0.f ? "+" : "") + juce::String (L.semis, 1) + " st",
+                    r.removeFromTop (24), juce::Justification::centredLeft);
+        g.setColour (ui::dim);
+        g.setFont (ui::sans (8.5f));
+        g.drawText (L.model == -1 ? "bending both engines" : "bending this engine only",
+                    r.removeFromTop (12), juce::Justification::centredLeft);
+        return;
+    }
+
+    if (gesture.cfg.pattern)
+    {
+        g.setColour (ui::scopeTrace);
+        g.setFont (ui::mono (20.f));
+        g.drawText ("STEP " + juce::String (L.index + 1), r.removeFromTop (24),
+                    juce::Justification::centredLeft);
+        g.setColour (ui::dim);
+        g.setFont (ui::sans (8.5f));
+        g.drawText (proc.engine.es.anyArp() ? "clocking the arpeggiator"
+                                         : "clocking the sequencer",
+                    r.removeFromTop (12), juce::Justification::centredLeft);
+        return;
+    }
+
+    // Note + velocity: the two things a stroke actually decided.
+    {
+        auto row = r.removeFromTop (24);
+        g.setColour (ui::scopeTrace);
+        g.setFont (ui::mono (20.f));
+        g.drawText (L.note >= 0 ? noteName (L.note) : "-",
+                    row.removeFromLeft (58), juce::Justification::centredLeft);
+
+        auto meter = row.reduced (0, 8).withTrimmedLeft (2);
+        g.setColour (ui::groove);
+        g.fillRoundedRectangle (meter.toFloat(), 2.f);
+        g.setColour (col);
+        g.fillRoundedRectangle (meter.toFloat().withWidth (
+            juce::jmax (2.f, (float) meter.getWidth() * L.vel)), 2.f);
+        g.setColour (ui::dim);
+        g.setFont (ui::mono (8.f));
+        g.drawText ("VEL " + juce::String (L.vel, 2), row, juce::Justification::centredRight);
+    }
+
+    g.setColour (ui::dim);
+    g.setFont (ui::mono (8.f));
+    g.drawText ("STRING " + juce::String (L.index + 1) + "/" + juce::String (slots),
+                r.removeFromTop (11), juce::Justification::centredLeft);
+
+    // One dot per string, filled where this lane is still holding it - the
+    // picture of what Ring versus Damp is actually doing. Plucked strings are
+    // never held, so the dots would all be empty and say nothing.
+    if (proc.engine.es.strumPluck)
+    {
+        r.removeFromTop (3);
+        g.setColour (ui::dimmer);
+        g.setFont (ui::sans (8.5f));
+        g.drawText ("plucked - the patch's release shapes the decay",
+                    r.removeFromTop (12), juce::Justification::centredLeft);
+    }
+    else
+    {
+        auto row = r.removeFromTop (12);
+        const int n = juce::jmin (numNotes, 24);
+        const float step = n > 0 ? juce::jmin (9.f, (float) row.getWidth() / (float) n) : 0.f;
+        for (int s = 0; s < n; ++s)
+        {
+            const bool on = proc.engine.strumRinging (lane, notes[s]);
+            const float x = (float) row.getX() + (float) s * step;
+            g.setColour (on ? col : ui::track);
+            if (on) g.fillEllipse (x, (float) row.getCentreY() - 2.5f, 5.f, 5.f);
+            else    g.drawEllipse (x + 0.5f, (float) row.getCentreY() - 2.f, 4.f, 4.f, 1.f);
+        }
+        r.removeFromTop (3);
+        g.setColour (ui::dimmer);
+        g.setFont (ui::sans (7.5f));
+        g.drawText (juce::String (proc.engine.strumRingCount (lane)) + " ringing",
+                    row.withY (r.getY()).withHeight (10), juce::Justification::centredLeft);
+    }
+
+    // The cross axis, named and valued: the axis you are not strumming along
+    // is doing something, and there is nowhere else that says what.
+    {
+        r.removeFromTop (12);
+        juce::String text;
+        switch (gesture.cfg.cross)
+        {
+            case eighty::GestureEngine::crossVelocity:
+                text = "CROSS . VEL x" + juce::String (0.35f + 0.65f * L.cross, 2); break;
+            case eighty::GestureEngine::crossBright:
+            {
+                const float v = L.cross * 2.f - 1.f;
+                text = "CROSS . BRIGHT " + juce::String (v >= 0.f ? "+" : "")
+                     + juce::String (v, 2);
+                break;
+            }
+            case eighty::GestureEngine::crossPressure:
+                text = "CROSS . PRESSURE "
+                     + juce::String (gesture.lastPressure(), 2); break;
+            default: text = "CROSS . off"; break;
+        }
+        g.setColour (ui::dim);
+        g.setFont (ui::mono (8.f));
+        g.drawText (text, r.removeFromTop (11), juce::Justification::centredLeft);
+    }
+}
+
+void TouchMonitor::paint (juce::Graphics& g)
+{
+    auto bounds = getLocalBounds();
+
+    g.setColour (ui::winBg.withAlpha (0.93f));
+    g.fillRoundedRectangle (bounds.toFloat(), 8.f);
+    g.setColour (ui::ledOn.withAlpha (0.55f));
+    g.drawRoundedRectangle (bounds.toFloat().reduced (0.5f), 8.f, 1.5f);
+
+    auto r = bounds.reduced (12);
+
+    // ---- title row
+    {
+        auto row = r.removeFromTop (14);
+        auto f = ui::sans (11.f, true);
+        f.setExtraKerningFactor (0.05f);
+        g.setColour (ui::textHi);
+        g.setFont (f);
+        g.drawText ("TOUCH MONITOR", row.removeFromLeft (140), juce::Justification::centredLeft);
+
+        const bool ribbon = gesture.mode() == eighty::GestureEngine::Mode::ribbon;
+        juce::String mode = ribbon ? "RIBBON"
+                          : gesture.cfg.pattern ? "STRUM . PATTERN" : "STRUM . CHORD";
+        if (! ribbon && ! gesture.cfg.pattern)
+            mode += proc.engine.es.strumPluck ? " . PLUCK" : " . HOLD";
+        if (gesture.cfg.fingers == 0 && ! ribbon) mode += "   2 FINGERS = 2 ENGINES";
+        g.setColour (ui::dim);
+        g.setFont (ui::sans (8.5f, true));
+        g.drawText (mode, row, juce::Justification::centredRight);
+    }
+    g.setColour (ui::stTouch);
+    g.fillRoundedRectangle ((float) r.getX(), (float) r.getY() + 1.f, 26.f, 3.f, 1.5f);
+    r.removeFromTop (10);
+
+    // The chord the strum is laid out over, read from the same published set
+    // the strum itself uses.
+    int notes[128];
+    const int numNotes = proc.engine.strumChord (notes, 128, gesture.cfg.span);
+    const int slots = gesture.slots (numNotes);
+
+    // ---- pad on the left, at a real trackpad's 1.6:1; lanes on the right
+    auto padArea = r.removeFromLeft (312);
+    paintPad (g, padArea.reduced (0, 0).toFloat(), notes, numNotes, slots);
+
+    r.removeFromLeft (12);
+    const int laneH = (r.getHeight() - 8) / 2;
+    paintLane (g, r.removeFromTop (laneH), 0, notes, numNotes, slots);
+    r.removeFromTop (8);
+    paintLane (g, r.removeFromTop (laneH), 1, notes, numNotes, slots);
+}
+
+// The settings menu. Everything in here is an ordinary parameter, so it
+// saves with the session and travels in a preset like the rest of the
+// instrument - a patch you strum wants its strum set up the way you left it.
+void EightyEditor::showSettingsMenu()
+{
+    auto set = [this] (const char* id, float value)
+    {
+        if (auto* p = proc.apvts.getParameter (id))
+        {
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (p->convertTo0to1 (value));
+            p->endChangeGesture();
+            paramTouched (id);
+        }
+    };
+    auto get = [this] (const char* id) { return gestureParam (id); };
+
+    // Menu ids index a list of closures rather than encoding a parameter and
+    // a value, which keeps each row's meaning next to the row.
+    auto acts = std::make_shared<std::vector<std::function<void()>>>();
+    auto item = [&acts] (juce::PopupMenu& menu, const juce::String& text, bool ticked,
+                         std::function<void()> action, bool enabled = true)
+    {
+        acts->push_back (std::move (action));
+        menu.addItem ((int) acts->size(), text, enabled, ticked);
+    };
+    auto toggle = [&] (juce::PopupMenu& menu, const juce::String& text, const char* id)
+    {
+        const bool on = get (id) > 0.5f;
+        item (menu, text, on, [set, id, on] { set (id, on ? 0.f : 1.f); });
+    };
+    // One submenu row per choice, ticked at the current one.
+    auto choices = [&] (juce::PopupMenu& menu, const juce::String& label, const char* id,
+                        juce::StringArray labels, bool enabled = true)
+    {
+        juce::PopupMenu sub;
+        const int cur = (int) get (id);
+        for (int i = 0; i < labels.size(); ++i)
+            item (sub, labels[i], i == cur, [set, id, i] { set (id, (float) i); });
+        menu.addSubMenu (label + "  (" + labels[juce::jlimit (0, labels.size() - 1, cur)] + ")",
+                         sub, enabled);
+    };
+    auto values = [&] (juce::PopupMenu& menu, const juce::String& label, const char* id,
+                       const std::vector<float>& vals, const juce::String& suffix)
+    {
+        juce::PopupMenu sub;
+        const float cur = get (id);
+        juce::String curText;
+        for (float v : vals)
+        {
+            const bool on = std::abs (v - cur) < 0.01f;
+            const bool whole = std::abs (v - std::floor (v)) < 1.0e-4f;
+            const auto text = juce::String (v, whole ? 0 : 2) + suffix;
+            if (on) curText = text;
+            item (sub, text, on, [set, id, v] { set (id, v); });
+        }
+        if (curText.isEmpty()) curText = juce::String (cur, 2) + suffix;
+        menu.addSubMenu (label + "  (" + curText + ")", sub);
+    };
+
+    juce::PopupMenu m;
+    m.setLookAndFeel (&lnf);
+
+    m.addSectionHeader ("Trackpad");
+    if (! trackpad.isAvailable())
+        m.addItem (-1, "No trackpad capture on this system", false);
+
+    toggle (m, "Trackpad gestures", ID::tpOn);
+    choices (m, "Strum key (hold)", ID::tpKey, { "Q", "Space", "` (grave)" });
+    toggle (m, "Latch - the key toggles instead of holding", ID::tpLatch);
+    m.addSeparator();
+
+    m.addSectionHeader ("Strum");
+    choices (m, "Strokes play", ID::tpTarget,
+             { "Chord - the notes you are holding", "Pattern - clock the arp / sequencer" });
+    values (m, "Span", ID::tpSpan, { 1.f, 2.f, 3.f, 4.f }, " oct");
+    values (m, "Force - stroke speed to velocity", ID::tpForce,
+            { 0.f, 0.25f, 0.5f, 0.6f, 0.8f, 1.f }, "");
+    choices (m, "Strum axis", ID::tpAxis, { "X - across the pad", "Y - up the pad" });
+    choices (m, "Cross axis", ID::tpCross,
+             { "Off", "Velocity", "Brilliance", "Force Touch to aftertouch" });
+    choices (m, "Articulation", ID::tpArtic,
+             { "Hold - strings ring until damped",
+               "Pluck - let go as the finger passes" });
+    choices (m, "On lift", ID::tpLift,
+             { "Ring - strings keep sounding", "Damp - let go",
+               "Gesture - moving rings, resting damps" },
+             gestureParam (ID::tpArtic) < 0.5f);
+    choices (m, "Two fingers", ID::tpFingers,
+             { "Per engine - CS-80 and JP-8 apart", "Both engines" });
+    m.addSeparator();
+
+    m.addSectionHeader ("Ribbon");
+    toggle (m, "Ribbon (hold I)", ID::tpRibbon);
+    values (m, "Range", ID::tpRibbonRng, { 1.f, 2.f, 5.f, 7.f, 12.f, 24.f }, " semi");
+    toggle (m, "Absolute - the middle of the pad is centre pitch", ID::tpRibbonAbs);
+    m.addSeparator();
+
+    toggle (m, "Freeze the pointer while a gesture key is held", ID::tpFreeze);
+    toggle (m, "Show touch monitor - where the fingers are and what they play",
+            ID::tpMonitor);
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (settingsBtn),
+        [acts] (int result)
+        {
+            if (result > 0 && result <= (int) acts->size())
+                (*acts)[(size_t) result - 1]();
+        });
+}
+
+void EightyEditor::applyGestureSettings()
+{
+    auto& c = gesture.cfg;
+    c.span        = (int) gestureParam (ID::tpSpan);
+    c.force       = gestureParam (ID::tpForce);
+    c.axis        = (int) gestureParam (ID::tpAxis);
+    c.cross       = (int) gestureParam (ID::tpCross);
+    c.lift        = (int) gestureParam (ID::tpLift);
+    c.fingers     = (int) gestureParam (ID::tpFingers);
+    c.pattern     = false;      // resolved in scanGestureKeys against what is running
+    c.ribbonRange = gestureParam (ID::tpRibbonRng);
+    c.ribbonMode  = gestureParam (ID::tpRibbonAbs) > 0.5f ? 1 : 0;
+    trackpad.setFreezePointer (gestureParam (ID::tpFreeze) > 0.5f);
+}
+
+void EightyEditor::setGestureMode (eighty::GestureEngine::Mode m)
+{
+    using Mode = eighty::GestureEngine::Mode;
+    if (m == gesture.mode()) return;
+
+    gesture.setMode (m);
+    trackpad.setEnabled (m != Mode::off);
+
+    // Arming damps whatever is ringing so the hand on the pad is the only
+    // thing sounding; the ribbon leaves the keyboard alone and only bends it.
+    armedPattern = m == Mode::strum && gesture.cfg.pattern;
+    GestureMsg g;
+    g.type = GestureMsg::kArm;
+    g.flag = m == Mode::strum;
+    g.dir = armedPattern ? 1 : 0;
+    proc.gestures.push (g);
+}
+
+// Arming is a held key, so it is scanned rather than driven by keyPressed -
+// exactly as the note keys are, and for the same reason: key repeat says
+// nothing about whether a key is still down.
+void EightyEditor::scanGestureKeys()
+{
+    using Mode = eighty::GestureEngine::Mode;
+
+    if (! trackpadAttached)
+    {
+        if (auto* peer = getPeer())
+        {
+            trackpad.attach (peer->getNativeHandle());
+            trackpadAttached = true;
+        }
+    }
+
+    // isKeyCurrentlyDown reads the *global* key state, so without this a Q
+    // typed into some other application would arm the pad and freeze the
+    // pointer out from under whatever the user was actually doing. A modal
+    // dialog counts as not focused too, which is how typing a preset name
+    // stays typing a preset name.
+    const bool focused = juce::Process::isForegroundProcess()
+                      && isShowing() && hasKeyboardFocus (true);
+
+    if (! focused || gestureParam (ID::tpOn) < 0.5f || ! trackpad.isAvailable())
+    {
+        strumLatched = false;
+        strumKeyWasDown = false;
+        setGestureMode (Mode::off);
+        if (touchMonitor != nullptr) touchMonitor->setActive (false);
+        return;
+    }
+
+    static const int keyCodes[] = { 'Q', juce::KeyPress::spaceKey, '`' };
+    const int code = keyCodes[juce::jlimit (0, 2, (int) gestureParam (ID::tpKey))];
+
+    const bool strumDown = juce::KeyPress::isKeyCurrentlyDown (code);
+    const bool ribbonOn = gestureParam (ID::tpRibbon) > 0.5f;
+    const bool ribbonDown = ribbonOn && (juce::KeyPress::isKeyCurrentlyDown ('I')
+                                      || juce::KeyPress::isKeyCurrentlyDown ('i'));
+
+    if (gestureParam (ID::tpLatch) > 0.5f)
+    {
+        if (strumDown && ! strumKeyWasDown) strumLatched = ! strumLatched;
+    }
+    else
+    {
+        strumLatched = false;
+    }
+    strumKeyWasDown = strumDown;
+
+    const bool strumActive = strumDown || strumLatched;
+
+    applyGestureSettings();
+
+    // Chord or pattern. Clocking by hand only means something when there is
+    // a pattern running to clock, so it falls back to strumming the chord.
+    const bool wantPattern = gestureParam (ID::tpTarget) > 0.5f
+                           && (proc.engine.es.anyArp() || proc.engine.seqPlay);
+    gesture.cfg.pattern = strumActive && wantPattern;
+
+    // The ribbon wins if both keys are down: it is the finer of the two, and
+    // wanting to bend a chord you are strumming is the likelier intent.
+    const Mode want = ribbonDown ? Mode::ribbon
+                    : strumActive ? Mode::strum : Mode::off;
+    setGestureMode (want);
+
+    // The monitor is only worth screen space while there is something on the
+    // pad to watch, so it follows the arming rather than the setting alone.
+    if (touchMonitor != nullptr)
+        touchMonitor->setActive (want != Mode::off
+                                 && gestureParam (ID::tpMonitor) > 0.5f);
+
+    // Switching the arpeggiator or the sequencer on under a held key changes
+    // what the strokes should be doing, so re-arm rather than leaving the
+    // step clock in whichever state it was armed in.
+    if (want == Mode::strum && gesture.cfg.pattern != armedPattern)
+    {
+        armedPattern = gesture.cfg.pattern;
+        GestureMsg g;
+        g.type = GestureMsg::kArm;
+        g.flag = true;
+        g.dir = armedPattern ? 1 : 0;
+        proc.gestures.push (g);
+    }
 }
 
 // -------------------------------------------------------- control makers
@@ -2590,6 +3325,105 @@ LedToggle* EightyEditor::makeLed (Section& s, const juce::String& paramID, const
 }
 
 // -------------------------------------------------------- preset bar
+// ------------------------------------------------------- audio recorder
+void EightyEditor::buildRecorder()
+{
+    recBtn.setWantsKeyboardFocus (false);
+    recBtn.setClickingTogglesState (false);      // the processor owns the state
+    recBtn.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd0402e));
+    recBtn.setTooltip ("Record the output to a stereo 24-bit WAV - everything you hear, "
+                       "post FX and limiter. Files land in Application Support/Eighty/"
+                       "Recordings. Right-click to open the folder");
+    recBtn.onClick = [this] { toggleRecording(); };
+    recBtn.onRightClick = [this] { showRecorderMenu(); };
+    addAndMakeVisible (recBtn);
+
+    recTime.setJustificationType (juce::Justification::centred);
+    recTime.setFont (ui::mono (9.f));
+    recTime.setColour (juce::Label::textColourId, ui::dim);
+    recTime.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (recTime);
+
+    updateRecorder();
+}
+
+void EightyEditor::toggleRecording()
+{
+    if (proc.isRecording())
+    {
+        const auto gap = proc.recordingGapSamples();
+        proc.stopRecording();
+        const auto f = proc.lastRecording();
+        readoutText = "RECORDED . " + f.getFileName().toUpperCase();
+        readoutUntil = juce::Time::getMillisecondCounter() + 4000;
+
+        // Say so rather than hand over a file with a hole in it and let it be
+        // discovered later.
+        if (gap > 0)
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon, "Recording dropped audio",
+                "The disk could not keep up, so " + juce::String (gap)
+                    + " samples are missing from\n" + f.getFileName()
+                    + ".\n\nThe file is otherwise complete.");
+    }
+    else
+    {
+        juce::String error;
+        if (! proc.startRecording (error))
+        {
+            juce::AlertWindow::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon, "Couldn't start recording", error);
+            return;
+        }
+        readoutText = "RECORDING...";
+        readoutUntil = juce::Time::getMillisecondCounter() + 2000;
+    }
+    updateRecorder();
+}
+
+void EightyEditor::showRecorderMenu()
+{
+    juce::PopupMenu m;
+    m.setLookAndFeel (&lnf);
+    const auto last = proc.lastRecording();
+    m.addItem (1, "Reveal recordings folder in Finder");
+    m.addItem (2, "Reveal last recording", last.existsAsFile());
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (recBtn),
+        [this, last] (int r)
+        {
+            if (r == 1)
+            {
+                auto folder = EightyProcessor::recordingsFolder();
+                folder.createDirectory();
+                folder.revealToUser();
+            }
+            else if (r == 2 && last.existsAsFile())
+                last.revealToUser();
+        });
+}
+
+void EightyEditor::updateRecorder()
+{
+    const bool on = proc.isRecording();
+    recBtn.setToggleState (on, juce::dontSendNotification);
+    recBtn.setButtonText (on ? "STOP" : "RECORD");
+
+    if (on)
+    {
+        const int secs = (int) proc.recordedSeconds();
+        recTime.setColour (juce::Label::textColourId, ui::scopeTrace);
+        recTime.setText (juce::String (secs / 60).paddedLeft ('0', 2) + ":"
+                       + juce::String (secs % 60).paddedLeft ('0', 2),
+                         juce::dontSendNotification);
+    }
+    else
+    {
+        recTime.setColour (juce::Label::textColourId, ui::dim);
+        recTime.setText (proc.lastRecording().existsAsFile() ? "SAVED" : "--:--",
+                         juce::dontSendNotification);
+    }
+}
+
 void EightyEditor::buildPresetBar()
 {
     presetPrevBtn.setWantsKeyboardFocus (false);
@@ -3338,7 +4172,13 @@ void EightyEditor::resized()
     const int lissX = getWidth() - 16 - lissSize;
     lissajous.setBounds (lissX, 7, lissSize, lissSize);
 
-    const int scopeX = hx + 6;
+    // Recorder block, between the master knobs and the scope. The scope is
+    // the widest thing on the panel and can spare it.
+    const int recW = 92;
+    recBtn.setBounds (hx + 4, 9, recW, 21);
+    recTime.setBounds (hx + 4, 32, recW, 14);
+
+    const int scopeX = hx + 4 + recW + 10;
     scope.setBounds (scopeX, 7, lissX - 8 - scopeX, 42);
 
     // ---- tab band: panel tabs, preset bar, LCD
@@ -3351,10 +4191,12 @@ void EightyEditor::resized()
         int px = 16 + PanelChips::totalW + 56;          // clear of the tabs + caption
         const int py = ui::tabY + 8, ph = 20;
         presetPrevBtn.setBounds (px, py, 22, ph);       px += 25;
-        const int nameW = juce::jlimit (120, 260, lcdX - 14 - 60 - 25 - px);
+        // reserve SAVE + SETTINGS on the right before the name takes the rest
+        const int nameW = juce::jlimit (120, 260, lcdX - 14 - 130 - 25 - px);
         presetNameBtn.setBounds (px, py, nameW, ph);    px += nameW + 3;
         presetNextBtn.setBounds (px, py, 22, ph);       px += 28;
-        presetSaveBtn.setBounds (px, py, 52, ph);
+        presetSaveBtn.setBounds (px, py, 52, ph);       px += 56;
+        settingsBtn.setBounds (px, py, 68, ph);
     }
 
     layoutRows();
@@ -3423,6 +4265,14 @@ void EightyEditor::resized()
     keyboard.setBounds (kbX, fy + 16, kbW, fb - (fy + 16));
     keyboard.setKeyWidth ((float) kbW / 36.f);
 
+    // Touch monitor: centred, over the middle rows. It only appears while a
+    // gesture key is held, and while it is up the panel underneath is not
+    // what you are looking at - but the LCD above and the keyboard below
+    // both stay clear.
+    if (touchMonitor != nullptr)
+        touchMonitor->setBounds ((getWidth() - TouchMonitor::prefW) / 2,
+                                 ui::perfY + 14, TouchMonitor::prefW, TouchMonitor::prefH);
+
     hintLabel.setBounds (0, ui::hintY, getWidth(), 20);
 
     updateHalo();
@@ -3451,12 +4301,29 @@ bool EightyEditor::keyPressed (const juce::KeyPress& kp, juce::Component*)
     if (c == 'z' || c == 'x' || c == 'c' || c == 'v' || c == 'b' || c == 'n'
         || c == 'm' || c == 'r')
         { handleActionKey (c); return true; }
+
+    // The gesture keys are swallowed rather than acted on: they are held,
+    // not pressed, so scanGestureKeys is what actually reads them. Space has
+    // to be caught here or it would work the focused button instead - but
+    // only when it is actually the strum key, so it stays a normal space
+    // everywhere else.
+    if (gestureParam (ID::tpOn) > 0.5f)
+    {
+        const bool spaceIsStrum = (int) gestureParam (ID::tpKey) == 1;
+        if (c == 'q' || c == 'i' || c == '`'
+            || (spaceIsStrum && code == juce::KeyPress::spaceKey))
+        {
+            scanGestureKeys();
+            return true;
+        }
+    }
     return false;
 }
 
 bool EightyEditor::keyStateChanged (bool, juce::Component*)
 {
     scanNoteKeys();
+    scanGestureKeys();
     return false;
 }
 
@@ -3505,7 +4372,21 @@ void EightyEditor::handleActionKey (juce::juce_wchar c)
     else if (c == 'c') typeVelocity = juce::jmax (0.1f, typeVelocity - 0.1f);
     else if (c == 'v') typeVelocity = juce::jmin (1.f, typeVelocity + 0.1f);
     else if (c == 'b') toggleParam (ID::hold);
-    else if (c == 'n') toggleParam (ID::arpOn);
+    else if (c == 'n')
+    {
+        // Both engines together - the per-engine split is a panel decision,
+        // and the shortcut is for getting the arp in and out of the way fast.
+        const bool anyOn = proc.apvts.getRawParameterValue (ID::csArpOn)->load() > 0.5f
+                        || proc.apvts.getRawParameterValue (ID::jpArpOn)->load() > 0.5f;
+        for (const char* id : { ID::csArpOn, ID::jpArpOn })
+            if (auto* p = proc.apvts.getParameter (id))
+            {
+                p->beginChangeGesture();
+                p->setValueNotifyingHost (anyOn ? 0.f : 1.f);
+                p->endChangeGesture();
+                paramTouched (id);
+            }
+    }
     else if (c == 'm') toggleParam (ID::seqPlay);
     else if (c == 'r') toggleParam (ID::seqRec);
 }
@@ -3518,6 +4399,7 @@ void EightyEditor::timerCallback()
         grabKeyboardFocus();
 
     scanNoteKeys();
+    scanGestureKeys();
 
     const int mode = (int) proc.apvts.getRawParameterValue (ID::engineMode)->load();
     if (mode != lastEngineMode)
@@ -3533,6 +4415,7 @@ void EightyEditor::timerCallback()
     tickAdjustRamp();
     refreshPresetName();           // tracks host automation and preset loads
     updateSeqReadout();
+    updateRecorder();
 
     if (proc.engine.seqPlay || proc.engine.seqRec)
         seqGrid.repaint();         // playhead / cursor
@@ -3577,7 +4460,18 @@ void EightyEditor::timerCallback()
         if (proc.lastLearnedCC.load() >= 0)
             learnFlashCC = proc.lastLearnedCC.load();
 
-        if (readoutText.isNotEmpty() && juce::Time::getMillisecondCounter() < readoutUntil)
+        // An armed pad takes the line over: it is a mode the keyboard is
+        // now in, and there is nowhere else on the panel that says so.
+        if (gesture.mode() != eighty::GestureEngine::Mode::off)
+        {
+            const bool ribbon = gesture.mode() == eighty::GestureEngine::Mode::ribbon;
+            statusLabel.setColour (juce::Label::textColourId, ui::ledOn.brighter (0.3f));
+            status = ribbon ? "RIBBON . slide to bend"
+                   : gesture.cfg.pattern ? "STRUM . clocking the pattern"
+                                         : "STRUM . across the held notes";
+            if (strumLatched && ! ribbon) status += " [LATCHED]";
+        }
+        else if (readoutText.isNotEmpty() && juce::Time::getMillisecondCounter() < readoutUntil)
             status = readoutText;
         else if (selectedCtl >= 0 && selectedCtl < (int) controls.size())
         {

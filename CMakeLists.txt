@@ -46,6 +46,16 @@ target_sources(Eighty PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp)
 
+# Trackpad capture. NSTouch has no C++ face, so the real implementation is
+# Objective-C++; everywhere else the stub compiles to a source that simply
+# never fires, which keeps the #ifdefs out of the editor.
+if(APPLE)
+    target_sources(Eighty PRIVATE Source/Trackpad.mm)
+    target_link_libraries(Eighty PRIVATE "-framework Cocoa" "-framework CoreGraphics")
+else()
+    target_sources(Eighty PRIVATE Source/Trackpad.cpp)
+endif()
+
 target_include_directories(Eighty PRIVATE Source)
 
 target_compile_definitions(Eighty PUBLIC

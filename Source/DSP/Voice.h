@@ -103,6 +103,12 @@ struct VoiceParams
 
     // Per-block modulation state computed by the engine:
     float bendSemis = 0.f;         // smoothed pitch bend, in semitones
+    // Trackpad ribbon, per engine: the CS-80's ribbon controller was left
+    // out because it does not map to a mouse or a computer keyboard - but a
+    // trackpad *is* a ribbon. Kept separate from bendSemis (and per model)
+    // so a finger can slide the JP-8 layer against a still CS-80 one, which
+    // is the thing two layers can do that one cannot.
+    float ribbonSemis[2] = { 0.f, 0.f };
     float modWheel = 0.f;          // 0..1, adds vibrato
     float channelPressure = 0.f;   // 0..1
 
@@ -489,6 +495,7 @@ private:
                                          + P.modWheel * 60.f);
 
         const float baseSemis = currentNoteF + P.bendSemis + velBend
+                              + P.ribbonSemis[model == modelJP8 ? 1 : 0]
                               + (P.masterTuneCents + unisonDetune + vibCents) * 0.01f;
 
         if (model == modelCS80)
